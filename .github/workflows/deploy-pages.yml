@@ -1,0 +1,77 @@
+name: Deploy to GitHub Pages
+
+# Replaces the previous Vercel deployment. GitHub Pages is static-only, so the
+# serverless functions under api/ cannot run here — see README-DEPLOY.md.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Let an in-flight deploy finish rather than cancelling it mid-publish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # A project site lives at /<repo>/, so a '/' base would request assets from the
+      # domain root and 404. A user/org site (<user>.github.io) is served from the root.
+      # VITE_REGISTERED_ORIGIN is the origin the Deriv redirect URI is registered on, so
+      # the OAuth tab can tell the user when they are on a different one. It is the
+      # origin only — the /<repo>/ path belongs to the redirect URI, not the origin.
+      - name: Resolve base path and origin
+        run: |
+          if [[ "${GITHUB_REPOSITORY#*/}" == *.github.io ]]; then
+            echo "VITE_BASE_PATH=/" >> "$GITHUB_ENV"
+          else
+            echo "VITE_BASE_PATH=/${GITHUB_REPOSITORY#*/}/" >> "$GITHUB_ENV"
+          fi
+          echo "VITE_REGISTERED_ORIGIN=https://${GITHUB_REPOSITORY_OWNER}.github.io" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: bun run build
+
+      # Pages has no rewrite rules, so an unknown path (e.g. /oauth/callback) would 404
+      # instead of booting the SPA. Serving index.html as 404.html lets the app's own
+      # router handle the route.
+      - name: Add SPA fallback for deep links
+        run: cp dist/index.html dist/404.html
+
+      - name: Show what shipped
+        run: |
+          echo "base: $VITE_BASE_PATH"
+          echo "registered origin: $VITE_REGISTERED_ORIGIN"
+          grep -oE 'src="[^"]*"' dist/index.html | head -3
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

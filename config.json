@@ -1,0 +1,8 @@
+{
+  "model": { "provider": "anthropic", "name": "claude-sonnet-4-6" },
+  "activeMode": "none",
+  "heartbeat": { "enabled": false, "intervalMs": 300000 },
+  "channels": [],
+  "skills": [],
+  "memory": { "enabled": false }
+}

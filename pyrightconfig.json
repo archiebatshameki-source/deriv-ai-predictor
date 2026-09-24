@@ -1,0 +1,12 @@
+{
+  "pythonVersion": "3.11",
+  "typeCheckingMode": "basic",
+  "reportMissingImports": true,
+  "reportMissingModuleSource": false,
+  "reportOptionalMemberAccess": true,
+  "exclude": [
+    ".shogo",
+    "node_modules",
+    "canvas"
+  ]
+}
