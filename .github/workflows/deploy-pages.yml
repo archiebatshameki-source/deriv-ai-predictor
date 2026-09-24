@@ -44,6 +44,9 @@ jobs:
             echo "VITE_BASE_PATH=/${GITHUB_REPOSITORY#*/}/" >> "$GITHUB_ENV"
           fi
           echo "VITE_REGISTERED_ORIGIN=https://${GITHUB_REPOSITORY_OWNER}.github.io" >> "$GITHUB_ENV"
+          # Pages has no server runtime, so OAuth cannot complete here. The app uses this
+          # to open the API token tab by default and explain the limitation.
+          echo "VITE_STATIC_HOSTING=1" >> "$GITHUB_ENV"
 
       - name: Build
         run: bun run build

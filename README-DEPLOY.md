@@ -53,6 +53,7 @@ Two build-time variables control how the client behaves on a subpath host:
 |---|---|
 | `VITE_BASE_PATH` | Asset base. `/<repo>/` for a project site, `/` for a user site |
 | `VITE_REGISTERED_ORIGIN` | Origin the redirect URI is registered on (no path). When unset the app assumes the current origin is registered, so it does not nag before any URI exists |
+| `VITE_STATIC_HOSTING` | Set to `1` when there is no server runtime. The login screen then opens the API token tab by default and explains why OAuth is unavailable here |
 
 The redirect URI registered with Deriv must match exactly, including the base path:
 

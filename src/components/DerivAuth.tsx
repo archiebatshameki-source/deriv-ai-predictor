@@ -39,8 +39,15 @@ const STAGE_LABEL: Record<Stage, string> = {
  */
 const REGISTERED_ORIGIN = import.meta.env.VITE_REGISTERED_ORIGIN?.trim() || ''
 
+/**
+ * Set by the deploy workflow when hosting somewhere with no server runtime (GitHub
+ * Pages). OAuth cannot complete without the /api/deriv/token exchange, so the tab that
+ * does work is opened by default instead of leading with a dead end.
+ */
+const STATIC_HOSTING = import.meta.env.VITE_STATIC_HOSTING === '1'
+
 export function DerivAuth({ onConnected, notice }: Props) {
-  const [tab, setTab] = useState<Tab>('oauth')
+  const [tab, setTab] = useState<Tab>(STATIC_HOSTING ? 'token' : 'oauth')
   const [token, setToken] = useState('')
   const [stage, setStage] = useState<Stage>('idle')
   const [error, setError] = useState<string | null>(null)
@@ -195,6 +202,16 @@ export function DerivAuth({ onConnected, notice }: Props) {
 
           {tab === 'oauth' ? (
             <>
+              {STATIC_HOSTING && (
+                <div className="mb-3 rounded-xl border border-amber-900/60 bg-amber-950/30 p-3">
+                  <p className="text-[11px] text-amber-300/90 leading-relaxed">
+                    This deployment is hosted statically, so OAuth cannot complete here — Deriv
+                    requires the final token exchange to happen on a server, and a static host has
+                    none. Use the <span className="font-semibold">API token</span> tab instead: it
+                    connects straight to Deriv from your browser and supports the full app.
+                  </p>
+                </div>
+              )}
               <button
                 onClick={() => void startOAuth()}
                 disabled={redirecting || !clientId}
