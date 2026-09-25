@@ -5,13 +5,15 @@ Hosted on **GitHub Pages** via `.github/workflows/deploy-pages.yml`. Every push 
 
 ## Live URL
 
-A project site is served from a subpath:
-
 ```
-https://<owner>.github.io/<repo>/
+https://archiebatshameki-source.github.io/deriv-ai-predictor/
 ```
 
-The workflow sets `VITE_BASE_PATH=/<repo>/` so asset URLs resolve correctly. A repo
+Repo: `archiebatshameki-source/deriv-ai-predictor` (public — Pages on a private repo
+needs GitHub Pro). Pages is enabled with **Source = GitHub Actions**.
+
+A project site is served from a subpath, so the workflow sets
+`VITE_BASE_PATH=/deriv-ai-predictor/` and asset URLs resolve correctly. A repo
 named `<owner>.github.io` is a *user site* served from the domain root, and the
 workflow detects that and sets `VITE_BASE_PATH=/` instead.
 
@@ -68,4 +70,13 @@ follows the deploy automatically.
 
 Pages has no rewrite rules, so the build copies `index.html` to `404.html`. An
 unknown path such as `/oauth/callback` then boots the SPA and the app's own router
-handles it, instead of returning a GitHub 404.
+handles it.
+
+Expect the **HTTP status to still be `404`** on such a path — that is how Pages
+signals "no file at this path", and it serves `404.html` as the body. The page
+renders normally regardless, because the body is the real app. This matters when
+debugging: a `404` from `curl` on a deep link is *not* a deployment failure — check
+the response body for `id="root"`.
+
+Verified on the live site: `/oauth/callback` returns `404` with the full SPA shell,
+React mounts, and the app strips the path back to `/deriv-ai-predictor/`.
