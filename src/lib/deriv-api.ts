@@ -57,6 +57,8 @@ const ERROR_HINTS: Record<string, string> = {
   RateLimit: 'Deriv is rate-limiting requests. Wait a few seconds and retry.',
   WrongResponse: 'Deriv returned an unexpected response. Please retry.',
   InputValidationFailed: 'Deriv rejected the request parameters.',
+  UnrecognisedRequest:
+    'Deriv did not recognise this request. The app may be sending a field name from the older API — please report this.',
   ContractBuyValidationError: 'Deriv rejected this trade (stake, duration or barrier).',
   InsufficientBalance: 'Not enough balance in this account for that stake.',
   PleaseAuthenticate: 'Not logged in to Deriv. Reconnect your account.',
@@ -259,28 +261,34 @@ export class DerivClient {
     duration?: number
     durationUnit?: string
   }): Promise<{ contractId: string; buyPrice: number; payout: number }> {
+    // The current Deriv WS API names these differently from the legacy API:
+    // the request key is `proposal` (not `propose`) and the market is
+    // `underlying_symbol` (not `symbol`). Both are validated by
+    // `additionalProperties: false`, so the legacy spellings are rejected with
+    // `UnrecognisedRequest` / `InputValidationFailed`. Verified against
+    // Deriv's published websocket schemas — see scripts/probe-deriv-proposal-shape.mjs.
     const proposal = await this.request<{
-      propose?: { id?: string; ask_price?: number; payout?: number }
+      proposal?: { id?: string; ask_price?: number; payout?: number }
     }>({
-      propose: 1,
+      proposal: 1,
       amount: params.stake,
       basis: 'stake',
       contract_type: params.contractType,
       currency: params.currency,
       duration: params.duration ?? 1,
       duration_unit: params.durationUnit ?? 't',
-      symbol: params.symbol,
+      underlying_symbol: params.symbol,
       ...(params.barrier != null ? { barrier: params.barrier } : {}),
     })
 
-    const propose = proposal.propose
-    if (!propose?.id) throw new DerivApiError('Deriv did not return a contract proposal.')
+    const offer = proposal.proposal
+    if (!offer?.id) throw new DerivApiError('Deriv did not return a contract proposal.')
 
     const purchased = await this.request<{
       buy?: { contract_id?: number | string; buy_price?: number; payout?: number }
     }>({
-      buy: propose.id,
-      price: propose.ask_price ?? params.stake,
+      buy: offer.id,
+      price: offer.ask_price ?? params.stake,
     })
 
     const buy = purchased.buy

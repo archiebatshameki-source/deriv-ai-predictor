@@ -232,7 +232,6 @@ export default function App() {
   if (!session || !clientRef.current) {
     return <DerivAuth onConnected={handleConnected} notice={notice} />
   }
-
   return (
     <LiveDashboard
       session={session}

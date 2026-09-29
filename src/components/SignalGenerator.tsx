@@ -31,6 +31,8 @@ type SignalGeneratorProps = {
 }
 
 const SAMPLE_SIZE = 10
+/** Seconds the arm countdown runs for once a target digit locks. */
+const ARM_SECONDS = 5
 
 export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHistory, onTargetLocked, onWatchStart }: SignalGeneratorProps) {
   const [phase, setPhase] = useState<Phase>('idle')
@@ -42,6 +44,8 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const [watchTicks, setWatchTicks] = useState(0)
   const [autoMode, setAutoMode] = useState(false)
+  /** Seconds left on the arm countdown shown after a target locks. */
+  const [armSeconds, setArmSeconds] = useState<number | null>(null)
 
   const lastProcessedRef = useRef<number | null>(null)
   const matchCounterRef = useRef(0)
@@ -57,6 +61,14 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
   const addJournal = useCallback((phase: string, message: string, digit?: number, isTarget?: boolean) => {
     setJournal(prev => [{ time: Date.now(), phase, message, digit, isTarget }, ...prev].slice(0, 100))
   }, [])
+
+  // Latest callback identities, so the countdown effect can stay keyed on
+  // `phase` alone instead of being torn down by every parent re-render.
+  const onWatchStartRef = useRef(onWatchStart)
+  onWatchStartRef.current = onWatchStart
+
+  const addJournalRef = useRef(addJournal)
+  addJournalRef.current = addJournal
 
   // ══════════════ STAGE A: Collect samples ══════════════
   useEffect(() => {
@@ -95,25 +107,46 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
           setTargetFreq(minFreq)
           setTargetConfidence(conf)
           targetRef.current = bestDigit
-          addJournal('lock', `Target digit locked: ${bestDigit} (freq ${pct}%, ${minFreq}/${SAMPLE_SIZE}) — now watching for it live`, bestDigit, true)
+          addJournal('lock', `Target digit locked: ${bestDigit} (freq ${pct}%, ${minFreq}/${SAMPLE_SIZE}) — arming in ${ARM_SECONDS}s`, bestDigit, true)
           setPhase('locked')
           onTargetLocked?.(bestDigit, conf)
-
-          // After showing lock message, start watching
-          setTimeout(() => {
-            setPhase('watching')
-            watchStartRef.current = Date.now()
-            setWatchTicks(0)
-            lastProcessedRef.current = null // Reset to catch next tick
-            addJournal('watch', `Watching for digit ${bestDigit}... waiting for match`)
-            onWatchStart?.(bestDigit)
-          }, 1500)
+          // The arm countdown effect takes it from here to the watching phase.
         }, 500)
       }
 
       return next
     })
-  }, [phase, lastDigit, addJournal, onAnalyze, onTargetLocked, onWatchStart])
+  }, [phase, lastDigit, addJournal, onAnalyze, onTargetLocked])
+
+  // ══════════════ ARM COUNTDOWN: locked → watching ══════════════
+  // Deadline-based, and deliberately independent of the parent's callback
+  // identities: the live tick stream re-renders this panel several times a
+  // second, so a timer keyed on props would be cleared and restarted before it
+  // ever fired. One interval per lock, compared against a wall-clock deadline.
+  useEffect(() => {
+    if (phase !== 'locked') return
+
+    const deadline = Date.now() + ARM_SECONDS * 1000
+    const tick = () => {
+      const left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000))
+      setArmSeconds(left)
+      if (left > 0) return
+
+      clearInterval(timer)
+      const target = targetRef.current
+      setArmSeconds(null)
+      setPhase('watching')
+      watchStartRef.current = Date.now()
+      setWatchTicks(0)
+      lastProcessedRef.current = null // Reset to catch next tick
+      addJournalRef.current('watch', `Countdown complete — watching for digit ${target}...`)
+      if (target != null) onWatchStartRef.current?.(target)
+    }
+
+    setArmSeconds(ARM_SECONDS)
+    const timer = setInterval(tick, 200)
+    return () => clearInterval(timer)
+  }, [phase])
 
   // ══════════════ STAGE B: Watch for target digit ══════════════
   useEffect(() => {
@@ -165,6 +198,7 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
     setTargetFreq(0)
     setTargetConfidence(0)
     setWatchTicks(0)
+    setArmSeconds(null)
     lastProcessedRef.current = null
     addJournal('system', '🔄 Starting new prediction round...')
   }, [addJournal])
@@ -181,6 +215,7 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
       setSamples([])
       setTargetDigit(null)
       setWatchTicks(0)
+      setArmSeconds(null)
       lastProcessedRef.current = null
     } else {
       setAutoMode(true)
@@ -194,6 +229,7 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
     setSamples([])
     setTargetDigit(null)
     setWatchTicks(0)
+    setArmSeconds(null)
     lastProcessedRef.current = null
   }, [])
 
@@ -350,9 +386,25 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
                 <p className="text-[11px] text-gray-400 font-mono">
                   Target: <span className="text-white font-bold">{targetDigit}</span> — freq: <span className="text-white font-bold">{targetFreq}/{SAMPLE_SIZE}</span>
                 </p>
-                <p className="text-[11px] text-emerald-400 font-mono mt-1">
-                  Now watching for it live...
-                </p>
+                {armSeconds != null && (
+                  <>
+                    <p className="text-[11px] text-emerald-400 font-mono mt-1">
+                      Arming — Stage B starts in{' '}
+                      <span className="text-white font-bold tabular-nums">{armSeconds}s</span>
+                    </p>
+                    <div className="mt-2 flex items-center gap-2">
+                      <div className="flex-1 h-1.5 rounded-full bg-black/50 overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-emerald-500/70 transition-all duration-1000 ease-linear"
+                          style={{ width: `${(armSeconds / ARM_SECONDS) * 100}%` }}
+                        />
+                      </div>
+                      <span className="text-2xl font-black font-mono tabular-nums leading-none text-emerald-400">
+                        {armSeconds}
+                      </span>
+                    </div>
+                  </>
+                )}
               </div>
             </div>
           )}
