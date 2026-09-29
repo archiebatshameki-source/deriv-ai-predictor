@@ -14,6 +14,7 @@ import { ModelSettings, type ModelParams, DEFAULT_PARAMS } from './ModelSettings
 import { ValidationMetrics } from './ValidationMetrics'
 import { DerivBroker, type QuickTradeKind } from './DerivBroker'
 import { AutoTradePanel, type AutoTradeLogEntry, type AutoTradeStats } from './AutoTradePanel'
+import { accumulateSettlement, emptyStats } from '../lib/trade-stats'
 import {
   Zap, Brain, Activity, BarChart3, Target, History,
   Play, Square, TrendingUp, TrendingDown, ArrowUp, ArrowDown,
@@ -65,8 +66,10 @@ export function LiveDashboard({
   const [autoTrade, setAutoTrade] = useState(false)
   const [stake, setStake] = useState(1)
   const [minConfidence, setMinConfidence] = useState(10)
+  const [profitTarget, setProfitTarget] = useState(10)
+  const [maxLoss, setMaxLoss] = useState(10)
   const [autoLog, setAutoLog] = useState<AutoTradeLogEntry[]>([])
-  const [autoStats, setAutoStats] = useState<AutoTradeStats>({ trades: 0, wins: 0, losses: 0, pnl: 0 })
+  const [autoStats, setAutoStats] = useState<AutoTradeStats>(emptyStats)
   const [targetDigit, setTargetDigit] = useState<number | null>(null)
   const [targetConfidence, setTargetConfidence] = useState(0)
   const [watching, setWatching] = useState(false)
@@ -89,7 +92,7 @@ export function LiveDashboard({
   }, [])
 
   /** Tracks an open contract to its settlement so the log and stats stay honest. */
-  const trackContract = useCallback((contractId: string, label: string) => {
+  const trackContract = useCallback((contractId: string, label: string, stakePlaced: number, payout: number) => {
     let settled = false
     let unsubscribe: () => void = () => { /* replaced below */ }
     let guard: ReturnType<typeof setTimeout> | undefined
@@ -100,12 +103,7 @@ export function LiveDashboard({
       unsubscribe()
       if (guard) clearTimeout(guard)
       const won = profit > 0
-      setAutoStats(prev => ({
-        trades: prev.trades + 1,
-        wins: prev.wins + (won ? 1 : 0),
-        losses: prev.losses + (won ? 0 : 1),
-        pnl: prev.pnl + profit,
-      }))
+      setAutoStats(prev => accumulateSettlement(prev, { stake: stakePlaced, payout, profit }))
       pushLog(
         won ? 'win' : 'loss',
         `${label} ${won ? 'WON' : 'LOST'} — ${profit >= 0 ? '+' : ''}${profit.toFixed(2)} ${session.currency} (contract ${contractId})`
@@ -150,7 +148,7 @@ export function LiveDashboard({
         'trade',
         `Contract ${result.contractId} bought at ${result.buyPrice.toFixed(2)} — payout ${result.payout.toFixed(2)}`
       )
-      trackContract(result.contractId, `DIGITMATCH ${digit}`)
+      trackContract(result.contractId, `DIGITMATCH ${digit}`, result.buyPrice, result.payout)
     } catch (err) {
       pushLog('error', err instanceof Error ? err.message : 'Trade could not be placed.')
     }
@@ -182,7 +180,7 @@ export function LiveDashboard({
         kind: 'ok',
         text: `${cfg.label} placed — contract ${result.contractId}, payout ${result.payout.toFixed(2)} ${session.currency}.`,
       })
-      trackContract(result.contractId, cfg.label)
+      trackContract(result.contractId, cfg.label, result.buyPrice, result.payout)
     } catch (err) {
       const text = err instanceof Error ? err.message : 'Trade could not be placed.'
       setQuickTradeMessage({ kind: 'err', text })
@@ -226,6 +224,23 @@ export function LiveDashboard({
       tradedTargetRef.current = null
     }
   }, [autoTrade])
+
+  // Session guard — stop trading once the profit target or max loss is hit, so
+  // the Profit target / Max loss columns are real limits and not just labels.
+  useEffect(() => {
+    if (!autoTrade || autoStats.trades === 0) return
+    const hitTarget = profitTarget > 0 && autoStats.pnl >= profitTarget
+    const hitStop = maxLoss > 0 && autoStats.pnl <= -maxLoss
+    if (!hitTarget && !hitStop) return
+    setAutoTrade(false)
+    setWatching(false)
+    pushLog(
+      hitTarget ? 'win' : 'loss',
+      hitTarget
+        ? `Profit target reached (+${autoStats.pnl.toFixed(2)} ${session.currency}) — auto trade stopped.`
+        : `Max loss reached (${autoStats.pnl.toFixed(2)} ${session.currency}) — auto trade stopped.`
+    )
+  }, [autoTrade, autoStats.trades, autoStats.pnl, profitTarget, maxLoss, pushLog, session.currency])
 
   const toggleAutoTrade = useCallback(() => {
     setAutoTrade(prev => {
@@ -706,6 +721,11 @@ export function LiveDashboard({
               onStakeChange={setStake}
               minConfidence={minConfidence}
               onMinConfidenceChange={setMinConfidence}
+              profitTarget={profitTarget}
+              onProfitTargetChange={setProfitTarget}
+              maxLoss={maxLoss}
+              onMaxLossChange={setMaxLoss}
+              market={selectedSymbol}
               log={autoLog}
               stats={autoStats}
               targetDigit={targetDigit}

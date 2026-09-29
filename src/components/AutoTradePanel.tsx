@@ -1,9 +1,13 @@
 import { cn } from '../lib/cn'
 import type { DerivSession } from '../lib/deriv-api'
+import type { AutoTradeStats } from '../lib/trade-stats'
+import { TradeStatsTable } from './TradeStatsTable'
 import {
   Bot, Play, Square, Loader2, Target, Trophy, AlertTriangle,
   CheckCircle2, XCircle, Info, Zap,
 } from 'lucide-react'
+
+export type { AutoTradeStats }
 
 export type AutoTradeLogKind = 'info' | 'signal' | 'trade' | 'win' | 'loss' | 'error'
 
@@ -14,13 +18,6 @@ export type AutoTradeLogEntry = {
   text: string
 }
 
-export type AutoTradeStats = {
-  trades: number
-  wins: number
-  losses: number
-  pnl: number
-}
-
 type Props = {
   session: DerivSession
   active: boolean
@@ -29,6 +26,11 @@ type Props = {
   onStakeChange: (stake: number) => void
   minConfidence: number
   onMinConfidenceChange: (value: number) => void
+  profitTarget: number
+  onProfitTargetChange: (value: number) => void
+  maxLoss: number
+  onMaxLossChange: (value: number) => void
+  market: string
   log: AutoTradeLogEntry[]
   stats: AutoTradeStats
   targetDigit: number | null
@@ -39,6 +41,7 @@ type Props = {
 
 const STAKES = [0.35, 1, 2, 5, 10]
 const CONFIDENCE_STEPS = [5, 10, 15, 20, 25]
+const TARGET_STEPS = [5, 10, 20, 50]
 
 const LOG_STYLE: Record<AutoTradeLogKind, { icon: React.ReactNode; className: string }> = {
   info: { icon: <Info className="w-3 h-3" />, className: 'text-gray-400' },
@@ -55,6 +58,7 @@ function stamp(time: number): string {
 
 export function AutoTradePanel({
   session, active, onToggle, stake, onStakeChange, minConfidence, onMinConfidenceChange,
+  profitTarget, onProfitTargetChange, maxLoss, onMaxLossChange, market,
   log, stats, targetDigit, targetConfidence, watching, streamLive,
 }: Props) {
   const winRate = stats.trades > 0 ? (stats.wins / stats.trades) * 100 : 0
@@ -155,9 +159,51 @@ export function AutoTradePanel({
             ))}
           </div>
         </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1.5">
+            Profit target ({session.currency})
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {TARGET_STEPS.map(t => (
+              <button
+                key={t}
+                onClick={() => onProfitTargetChange(t)}
+                className={cn(
+                  'px-2 py-1 rounded-md text-[11px] font-mono border transition-all',
+                  profitTarget === t
+                    ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                    : 'bg-gray-800/60 border-gray-700 text-gray-400 hover:bg-gray-700/60'
+                )}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1.5">
+            Max loss ({session.currency})
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {TARGET_STEPS.map(t => (
+              <button
+                key={t}
+                onClick={() => onMaxLossChange(t)}
+                className={cn(
+                  'px-2 py-1 rounded-md text-[11px] font-mono border transition-all',
+                  maxLoss === t
+                    ? 'bg-red-500/15 border-red-500/40 text-red-300'
+                    : 'bg-gray-800/60 border-gray-700 text-gray-400 hover:bg-gray-700/60'
+                )}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
 
-      {/* Stats */}
+      {/* Summary */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
         <Stat label="Trades" value={stats.trades.toString()} color="text-gray-200" />
         <Stat label="Wins" value={stats.wins.toString()} color="text-emerald-400" />
@@ -168,6 +214,22 @@ export function AutoTradePanel({
           color={stats.pnl > 0 ? 'text-emerald-400' : stats.pnl < 0 ? 'text-red-400' : 'text-gray-400'}
         />
       </div>
+
+      <TradeStatsTable
+        currency={session.currency}
+        stake={stake}
+        profitTarget={profitTarget}
+        risk={stake}
+        market={market}
+        maxLoss={maxLoss}
+        totalStake={stats.totalStake}
+        totalPayout={stats.totalPayout}
+        runs={stats.trades}
+        lost={stats.losses}
+        won={stats.wins}
+        pnl={stats.pnl}
+        active={active}
+      />
 
       {!streamLive && (
         <div className="flex items-start gap-2 rounded-lg border border-amber-500/25 bg-amber-500/10 px-2.5 py-2">

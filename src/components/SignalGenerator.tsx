@@ -31,8 +31,10 @@ type SignalGeneratorProps = {
 }
 
 const SAMPLE_SIZE = 10
-/** Seconds the arm countdown runs for once a target digit locks. */
+/** Seconds the entry countdown runs for once a target digit locks. */
 const ARM_SECONDS = 5
+/** How long the TRADE NOW handoff stays on screen before Stage B takes over. */
+const TRADE_NOW_MS = 1200
 
 export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHistory, onTargetLocked, onWatchStart }: SignalGeneratorProps) {
   const [phase, setPhase] = useState<Phase>('idle')
@@ -44,8 +46,10 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const [watchTicks, setWatchTicks] = useState(0)
   const [autoMode, setAutoMode] = useState(false)
-  /** Seconds left on the arm countdown shown after a target locks. */
+  /** Seconds left on the entry countdown shown after a target locks. */
   const [armSeconds, setArmSeconds] = useState<number | null>(null)
+  /** True for the brief TRADE NOW handoff once the countdown hits zero. */
+  const [tradeNow, setTradeNow] = useState(false)
 
   const lastProcessedRef = useRef<number | null>(null)
   const matchCounterRef = useRef(0)
@@ -107,7 +111,7 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
           setTargetFreq(minFreq)
           setTargetConfidence(conf)
           targetRef.current = bestDigit
-          addJournal('lock', `Target digit locked: ${bestDigit} (freq ${pct}%, ${minFreq}/${SAMPLE_SIZE}) — arming in ${ARM_SECONDS}s`, bestDigit, true)
+          addJournal('lock', `Target digit locked: ${bestDigit} (freq ${pct}%, ${minFreq}/${SAMPLE_SIZE}) — entry in ${ARM_SECONDS}s`, bestDigit, true)
           setPhase('locked')
           onTargetLocked?.(bestDigit, conf)
           // The arm countdown effect takes it from here to the watching phase.
@@ -118,7 +122,7 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
     })
   }, [phase, lastDigit, addJournal, onAnalyze, onTargetLocked])
 
-  // ══════════════ ARM COUNTDOWN: locked → watching ══════════════
+  // ══════════════ ENTRY COUNTDOWN: locked → TRADE NOW → watching ══════════════
   // Deadline-based, and deliberately independent of the parent's callback
   // identities: the live tick stream re-renders this panel several times a
   // second, so a timer keyed on props would be cleared and restarted before it
@@ -127,26 +131,47 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
     if (phase !== 'locked') return
 
     const deadline = Date.now() + ARM_SECONDS * 1000
+    let handoff: ReturnType<typeof setTimeout> | undefined
+
     const tick = () => {
       const left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000))
-      setArmSeconds(left)
-      if (left > 0) return
 
+      if (left > 0) {
+        setArmSeconds(left)
+        return
+      }
+
+      // Countdown finished — hold on TRADE NOW, then hand over to Stage B.
       clearInterval(timer)
+      setArmSeconds(0)
+      setTradeNow(true)
+
       const target = targetRef.current
-      setArmSeconds(null)
-      setPhase('watching')
-      watchStartRef.current = Date.now()
-      setWatchTicks(0)
-      lastProcessedRef.current = null // Reset to catch next tick
-      addJournalRef.current('watch', `Countdown complete — watching for digit ${target}...`)
-      if (target != null) onWatchStartRef.current?.(target)
+      handoff = setTimeout(() => {
+        setTradeNow(false)
+        setPhase('watching')
+        watchStartRef.current = Date.now()
+        setWatchTicks(0)
+        lastProcessedRef.current = null // Reset to catch next tick
+        addJournalRef.current('watch', `Entry window closed — watching for digit ${target}...`)
+        if (target != null) onWatchStartRef.current?.(target)
+      }, TRADE_NOW_MS)
     }
 
     setArmSeconds(ARM_SECONDS)
-    const timer = setInterval(tick, 200)
-    return () => clearInterval(timer)
+    setTradeNow(false)
+    const timer = setInterval(tick, 100)
+    return () => {
+      clearInterval(timer)
+      if (handoff) clearTimeout(handoff)
+    }
   }, [phase])
+
+  // Any exit from the locked phase (stop, new round, auto toggle) clears the
+  // TRADE NOW handoff, so it can never linger into an unrelated round.
+  useEffect(() => {
+    if (phase !== 'locked' && tradeNow) setTradeNow(false)
+  }, [phase, tradeNow])
 
   // ══════════════ STAGE B: Watch for target digit ══════════════
   useEffect(() => {
@@ -386,16 +411,20 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
                 <p className="text-[11px] text-gray-400 font-mono">
                   Target: <span className="text-white font-bold">{targetDigit}</span> — freq: <span className="text-white font-bold">{targetFreq}/{SAMPLE_SIZE}</span>
                 </p>
-                {armSeconds != null && (
+                {tradeNow ? (
+                  <p className="mt-2 text-lg font-black tracking-wider text-emerald-300 animate-pulse">
+                    TRADE NOW
+                  </p>
+                ) : armSeconds != null ? (
                   <>
                     <p className="text-[11px] text-emerald-400 font-mono mt-1">
-                      Arming — Stage B starts in{' '}
+                      Entry in{' '}
                       <span className="text-white font-bold tabular-nums">{armSeconds}s</span>
                     </p>
                     <div className="mt-2 flex items-center gap-2">
                       <div className="flex-1 h-1.5 rounded-full bg-black/50 overflow-hidden">
                         <div
-                          className="h-full rounded-full bg-emerald-500/70 transition-all duration-1000 ease-linear"
+                          className="h-full rounded-full bg-emerald-500/70 transition-all duration-100 ease-linear"
                           style={{ width: `${(armSeconds / ARM_SECONDS) * 100}%` }}
                         />
                       </div>
@@ -404,7 +433,7 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
                       </span>
                     </div>
                   </>
-                )}
+                ) : null}
               </div>
             </div>
           )}
