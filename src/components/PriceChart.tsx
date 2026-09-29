@@ -32,14 +32,16 @@ export function PriceChart({ ticks, currentPrice, symbol }: PriceChartProps) {
 
     const chart = createChart(containerRef.current, {
       layout: {
-        background: { type: ColorType.Solid, color: 'white' },
+        // Matches the surrounding card (#1a1a2e). A white chart inside a dark
+        // dashboard reads as a rendering bug.
+        background: { type: ColorType.Solid, color: '#1a1a2e' },
         textColor: '#94a3b8',
         fontFamily: 'monospace',
         fontSize: 10,
       },
       grid: {
-        vertLines: { color: '#f1f5f9' },
-        horzLines: { color: '#f1f5f9' },
+        vertLines: { color: 'rgba(148, 163, 184, 0.10)' },
+        horzLines: { color: 'rgba(148, 163, 184, 0.10)' },
       },
       crosshair: {
         mode: CrosshairMode.Normal,
@@ -51,7 +53,7 @@ export function PriceChart({ ticks, currentPrice, symbol }: PriceChartProps) {
         barSpacing: 6,
       },
       rightPriceScale: {
-        borderColor: '#e2e8f0',
+        borderColor: '#374151',
         scaleMargins: { top: 0.1, bottom: 0.1 },
       },
     })
