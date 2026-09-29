@@ -1,31 +1,23 @@
 /**
- * Client-side Deriv API client.
+ * Client-side Deriv WebSocket client.
  *
  * Deriv's WebSocket API is only reachable from a real user's browser/device —
  * the cloud sandbox cannot open outbound sockets to Deriv. So every call in
  * this module runs in the browser, straight against Deriv.
+ *
+ * Transport: `connectTo()` attaches to a pre-authenticated socket obtained from
+ * Deriv's REST OTP endpoint (see ./deriv-rest.ts). The OTP in the URL performs
+ * authentication, so no `authorize` message is sent.
  */
-
-// Verified reachable from real browsers. The classic ws.binaryws.com host and
-// the non-/public path both fail to open, so they stay as last-resort fallbacks.
-const AUTH_ENDPOINTS = [
-  'wss://api.derivws.com/trading/v1/options/ws/public?app_id=1089',
-  'wss://ws.binaryws.com/websockets/v3?app_id=1089',
-]
-
-export const DERIV_APP_ID = 1089
-export const DERIV_TOKEN_URL = 'https://app.deriv.com/account/api-token'
-export const DERIV_DASHBOARD_URL = 'https://home.deriv.com/dashboard/'
 
 export type DerivAccount = {
   loginid: string
   isVirtual: boolean
   currency: string
   balance: number | null
+  /** 'demo' | 'real' as reported by the REST accounts endpoint. */
+  accountType?: 'demo' | 'real'
 }
-
-/** 'oauth' = Bearer access token + OTP socket; 'pat' = API token via `authorize`. */
-export type DerivAuthMode = 'pat' | 'oauth'
 
 export type DerivSession = {
   loginid: string
@@ -37,7 +29,8 @@ export type DerivSession = {
   company: string
   accounts: DerivAccount[]
   token: string
-  authMode?: DerivAuthMode
+  /** Deriv-App-ID the session was opened with (required for PAT auth). */
+  appId?: string
 }
 
 export class DerivApiError extends Error {
@@ -57,9 +50,10 @@ type PendingRequest = {
 
 /** Human-readable messages for the Deriv error codes users actually hit. */
 const ERROR_HINTS: Record<string, string> = {
-  AuthorizationRequired: 'Your token was rejected by Deriv. Create a new one with Read + Trade scopes.',
+  AuthorizationRequired:
+    'Deriv rejected this connection. Reconnect your account, or re-create the API token with the Trade scope ticked.',
   InvalidToken: 'That token is not valid. Copy the full token from your Deriv API token page.',
-  InvalidAppID: 'Deriv rejected this app ID. Try again, or create the token from app.deriv.com.',
+  InvalidAppID: 'Deriv rejected this app ID. Check the App ID on developers.deriv.com.',
   RateLimit: 'Deriv is rate-limiting requests. Wait a few seconds and retry.',
   WrongResponse: 'Deriv returned an unexpected response. Please retry.',
   InputValidationFailed: 'Deriv rejected the request parameters.',
@@ -71,6 +65,19 @@ const ERROR_HINTS: Record<string, string> = {
 export function describeDerivError(code?: string, fallback?: string): string {
   if (code && ERROR_HINTS[code]) return ERROR_HINTS[code]
   return fallback || 'Deriv connection failed.'
+}
+
+/** Detaches every handler before closing, so a retired socket can't fire again. */
+function detachAndClose(ws: WebSocket) {
+  ws.onopen = null
+  ws.onmessage = null
+  ws.onerror = null
+  ws.onclose = null
+  try {
+    ws.close()
+  } catch {
+    /* already closing */
+  }
 }
 
 /**
@@ -92,33 +99,24 @@ export class DerivClient {
     return this.endpoint
   }
 
-  /** Opens a socket to the first reachable Deriv endpoint. */
-  async connect(timeoutMs = 12000): Promise<void> {
-    const errors: string[] = []
-
-    for (const url of AUTH_ENDPOINTS) {
-      try {
-        await this.openSocket(url, timeoutMs)
-        this.endpoint = url
-        return
-      } catch (err) {
-        errors.push(err instanceof Error ? err.message : String(err))
-        this.teardown()
-      }
-    }
-
-    throw new DerivApiError(
-      errors[0] ?? 'Could not reach Deriv. Check your internet connection and retry.'
-    )
-  }
-
   /**
-   * Attaches to a pre-authenticated socket obtained from Deriv's OTP endpoint.
-   * The OTP in the URL performs authentication, so no `authorize` call is needed.
+   * Attaches to a pre-authenticated socket obtained from Deriv's REST OTP endpoint.
+   * The OTP in the URL performs authentication, so no `authorize` message is sent.
+   *
+   * Sockets are account-scoped, so switching accounts means fetching a fresh OTP.
+   * The outgoing socket is only closed once the replacement is open, so a failed
+   * switch leaves the working connection intact.
    */
   async connectTo(wsUrl: string, timeoutMs = 12000): Promise<void> {
+    const previous = this.ws
+    // In-flight requests belong to the outgoing account. Settle them now rather
+    // than let them resolve later against the wrong one.
+    this.failAllPending(new DerivApiError('Account changed — request cancelled.'))
+
     await this.openSocket(wsUrl, timeoutMs)
     this.endpoint = wsUrl
+
+    if (previous && previous !== this.ws) detachAndClose(previous)
   }
 
   private openSocket(url: string, timeoutMs: number): Promise<void> {
@@ -135,7 +133,7 @@ export class DerivClient {
       const timer = setTimeout(() => {
         if (settled) return
         settled = true
-        try { ws.close() } catch { /* noop */ }
+        detachAndClose(ws)
         reject(new DerivApiError('Timed out reaching Deriv. Check your internet connection.'))
       }, timeoutMs)
 
@@ -152,6 +150,8 @@ export class DerivClient {
         if (settled) return
         settled = true
         clearTimeout(timer)
+        // Without this the rejected attempt stays open and leaks a socket.
+        detachAndClose(ws)
         reject(new DerivApiError('Could not connect to Deriv servers.'))
       }
     })
@@ -241,56 +241,10 @@ export class DerivClient {
     return () => this.subscriptions.delete(handler)
   }
 
-  authorize(token: string): Promise<DerivSession> {
-    return this.request<{ authorize: Record<string, unknown> }>({ authorize: token }).then(res => {
-      const a = res.authorize
-      const rawList = Array.isArray(a.account_list) ? a.account_list : []
-      const accounts: DerivAccount[] = rawList.map(item => {
-        const acc = item as Record<string, unknown>
-        const loginid = String(acc.loginid ?? '')
-        return {
-          loginid,
-          isVirtual: Number(acc.is_virtual ?? loginid.startsWith('VRTC') ? 1 : 0) === 1,
-          currency: String(acc.currency ?? a.currency ?? 'USD'),
-          balance: null,
-        }
-      })
-
-      const isVirtual = Number(a.is_virtual ?? 0) === 1
-      const loginid = String(a.loginid ?? '')
-      const balance = typeof a.balance === 'number' ? a.balance : Number(a.balance ?? NaN)
-      const primary: DerivAccount = {
-        loginid,
-        isVirtual,
-        currency: String(a.currency ?? 'USD'),
-        balance: Number.isFinite(balance) ? balance : null,
-      }
-
-      if (!accounts.some(acc => acc.loginid === loginid)) accounts.unshift(primary)
-      else accounts.forEach(acc => { if (acc.loginid === loginid) acc.balance = primary.balance })
-
-      return {
-        loginid,
-        fullname: String(a.fullname ?? ''),
-        email: String(a.email ?? ''),
-        currency: primary.currency,
-        balance: primary.balance,
-        isVirtual,
-        company: String(a.landing_company_fullname ?? ''),
-        accounts,
-        token,
-      }
-    })
-  }
-
   async getBalance(): Promise<number | null> {
     const res = await this.request<{ balance?: { balance?: number } }>({ balance: 1 })
     const value = res.balance?.balance
     return typeof value === 'number' ? value : null
-  }
-
-  async switchAccount(loginid: string): Promise<void> {
-    await this.request({ switch_account: 1, loginid })
   }
 
   /**
@@ -347,11 +301,6 @@ export class DerivClient {
     this.failAllPending(new DerivApiError('Deriv connection closed.'))
     const ws = this.ws
     this.ws = null
-    if (!ws) return
-    ws.onopen = null
-    ws.onmessage = null
-    ws.onerror = null
-    ws.onclose = null
-    try { ws.close() } catch { /* noop */ }
+    if (ws) detachAndClose(ws)
   }
 }

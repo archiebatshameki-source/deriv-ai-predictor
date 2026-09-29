@@ -2,8 +2,8 @@
  * Reproduces what the GitHub Pages workflow does, so the subpath build can be verified
  * before it is relied on in CI:
  *   - base = /<repo>/        (assets must not point at the domain root)
- *   - VITE_STATIC_HOSTING=1  (login screen must open the API token tab)
  *   - index.html -> 404.html (deep links must boot the SPA)
+ *   - the app must talk to Deriv directly (no serverless proxy, no OAuth leftovers)
  *
  * Builds to a temp dir so it never touches dist/ or races the runtime's build watcher.
  */
@@ -14,8 +14,6 @@ const OUT = '/tmp/pages-verify'
 const REPO = 'deriv-ai-predictor'
 
 process.env.VITE_BASE_PATH = `/${REPO}/`
-process.env.VITE_STATIC_HOSTING = '1'
-process.env.VITE_REGISTERED_ORIGIN = 'https://example-user.github.io'
 
 await rm(OUT, { recursive: true, force: true })
 await build({ build: { outDir: OUT, emptyOutDir: true } })
@@ -34,13 +32,23 @@ const locals = srcs.filter(s => s.startsWith('/') && !s.startsWith('//'))
 check('all root-relative refs sit under the base', locals.every(s => s.startsWith(`/${REPO}/`)), locals.join(' '))
 check('no asset points at the domain root', !locals.some(s => s.startsWith('/assets/') || s === '/favicon.svg'))
 
-// The static-hosting branch must survive into the bundle (it is dead-code-eliminated
-// when the flag is off, so its presence here proves the flag reached the build).
 const jsName = srcs.find(s => s.endsWith('.js'))
 const js = await readFile(`${OUT}${jsName.replace(`/${REPO}`, '')}`, 'utf8')
-check('static-hosting notice is in the bundle', js.includes('hosted statically'))
-check('registered origin is inlined', js.includes('example-user.github.io'))
-check('OAuth-in-unavailable notice is in the bundle', js.includes('static, so the OAuth login is unavailable'))
+
+// The new architecture is browser-only: REST calls go straight to Deriv, so the app
+// works on a static host with no proxy.
+check('Deriv REST base is in the bundle', js.includes('api.derivws.com'))
+check('accounts endpoint is in the bundle', js.includes('/trading/v1/options/accounts'))
+check('OTP endpoint is in the bundle', js.includes('/otp'))
+check('Deriv-App-ID header is sent', js.includes('Deriv-App-ID'))
+
+// The OAuth flow was removed at the user's request — none of it may ship, and no
+// hardcoded OAuth client ID may be present in any form.
+check('no OAuth remnants in the bundle', !/oauth2|pkce|code_verifier|client_id/i.test(js))
+check(
+  'no hardcoded UUID client ID ships',
+  !/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(js)
+)
 
 // SPA fallback.
 await cp(`${OUT}/index.html`, `${OUT}/404.html`)

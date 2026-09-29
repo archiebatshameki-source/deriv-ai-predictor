@@ -79,7 +79,7 @@ function ParamSlider({ label, value, min, max, step, unit, onChange }: ParamSlid
         step={step}
         value={value}
         onChange={e => onChange(parseFloat(e.target.value))}
-        className="w-full h-1.5 bg-gray-200 rounded-full appearance-none cursor-pointer accent-violet-600"
+        className="w-full h-1.5 bg-gray-700 rounded-full appearance-none cursor-pointer accent-violet-500"
       />
     </div>
   )
@@ -108,7 +108,7 @@ function ModelToggle({ label, icon, enabled, onChange }: ModelToggleProps) {
       <span className="font-medium">{label}</span>
       <span className={cn(
         'ml-auto w-7 h-4 rounded-full transition-all relative',
-        enabled ? 'bg-violet-500' : 'bg-gray-300'
+        enabled ? 'bg-violet-500' : 'bg-gray-600'
       )}>
         <span className={cn(
           'absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-all',

@@ -3,23 +3,26 @@ import { LiveDashboard } from './components/LiveDashboard'
 import { DerivAuth } from './components/DerivAuth'
 import { DerivClient, type DerivAccount, type DerivSession } from './lib/deriv-api'
 import {
-  OAUTH_CALLBACK_PATH,
-  consumeOAuthState,
-  describeOAuthError,
-  exchangeCodeForToken,
-  fetchDerivAccounts,
-  fetchOtpWebSocketUrl,
-  getClientId,
-  parseOAuthCallback,
-  stripBase,
-} from './lib/deriv-oauth'
+  buildDerivSession,
+  getSavedAccountId,
+  getSavedAppId,
+  listAccounts,
+  pickDefaultAccount,
+  requestOtpUrl,
+  saveAccountId,
+} from './lib/deriv-rest'
 import { Loader2 } from 'lucide-react'
 
 const TOKEN_KEY = 'deriv_api_token'
-const AUTH_MODE_KEY = 'deriv_auth_mode'
 
 /** Never leave the user staring at the loader if Deriv is slow or unreachable. */
 const RESTORE_DEADLINE_MS = 12000
+
+type OpenedAccount = {
+  accounts: Awaited<ReturnType<typeof listAccounts>>
+  activeAccountId: string
+  balance: number | null
+}
 
 export default function App() {
   const [session, setSession] = useState<DerivSession | null>(null)
@@ -29,147 +32,97 @@ export default function App() {
   const [reconnectError, setReconnectError] = useState<string | null>(null)
   const clientRef = useRef<DerivClient | null>(null)
 
-  /** Opens the OTP-authenticated socket for a specific account (OAuth mode). */
-  const attachOAuthSocket = useCallback(
-    async (client: DerivClient, accessToken: string, accountId: string) => {
-      const { url } = await fetchOtpWebSocketUrl({ token: accessToken, accountId })
-      await client.connectTo(url)
+  /**
+   * Authenticates against the current Deriv API: the REST accounts call lists what
+   * the token can reach, then an OTP gives a pre-authenticated socket for one
+   * account. Sockets are account-scoped, so every account switch repeats the OTP step.
+   */
+  const openAccount = useCallback(
+    async (
+      client: DerivClient,
+      params: { token: string; appId?: string; accountId?: string | null }
+    ): Promise<OpenedAccount> => {
+      const accounts = await listAccounts({ token: params.token, appId: params.appId })
+      if (accounts.length === 0) {
+        throw new Error('This API token has no trading accounts yet.')
+      }
+
+      const active = pickDefaultAccount(accounts, params.accountId)
+      const wsUrl = await requestOtpUrl({
+        token: params.token,
+        accountId: active.accountId,
+        appId: params.appId,
+      })
+      await client.connectTo(wsUrl)
+
+      let balance = active.balance
+      try {
+        balance = (await client.getBalance()) ?? balance
+      } catch {
+        /* the REST balance is enough to open the dashboard with */
+      }
+
+      return { accounts, activeAccountId: active.accountId, balance }
     },
     []
   )
 
-  /** Builds a full session from an OAuth access token: REST accounts + OTP socket. */
-  const buildOAuthSession = useCallback(
-    async (client: DerivClient, accessToken: string): Promise<DerivSession> => {
-      const { accounts } = await fetchDerivAccounts({ token: accessToken })
-      if (accounts.length === 0) {
-        throw new Error('Deriv returned no trading accounts for this login.')
-      }
-
-      const preferred = accounts.find(a => a.isVirtual) ?? accounts[0]
-      await attachOAuthSocket(client, accessToken, preferred.loginid)
-
-      const mapped: DerivAccount[] = accounts.map(a => ({
-        loginid: a.loginid,
-        isVirtual: a.isVirtual,
-        currency: a.currency,
-        balance: a.balance,
-      }))
-
-      return {
-        loginid: preferred.loginid,
-        fullname: '',
-        email: '',
-        currency: preferred.currency,
-        balance: preferred.balance,
-        isVirtual: preferred.isVirtual,
-        company: '',
-        accounts: mapped,
-        token: accessToken,
-        authMode: 'oauth',
-      }
-    },
-    [attachOAuthSocket]
-  )
-
-  /* ── boot: OAuth callback first, then saved-session restore ─────────── */
+  /* ── boot: restore a saved session ──────────────────────────────────── */
 
   useEffect(() => {
-    const finish = () => setRestoring(false)
-
-    const handleOAuthCallback = async () => {
-      const clientId = getClientId()
-      const { code, state, error, errorDescription } = parseOAuthCallback(window.location.search)
-
-      // Strip the code from the address bar immediately. BASE_URL, not '/', so a
-      // subpath deploy (/<repo>/) keeps the user inside the app instead of jumping
-      // to the domain root.
-      window.history.replaceState({}, '', import.meta.env.BASE_URL)
-
-      if (error) {
-        setNotice(`Deriv login was not completed: ${errorDescription || error}`)
-        finish()
-        return
-      }
-      if (!code) {
-        setNotice('Deriv did not return an authorization code. Please try again.')
-        finish()
-        return
-      }
-      if (!clientId) {
-        setNotice('No OAuth client ID is configured, so the login could not be completed.')
-        finish()
-        return
-      }
-
-      try {
-        const verifier = consumeOAuthState(state)
-        const tokens = await exchangeCodeForToken({ code, verifier, clientId })
-        if (!tokens.access_token) throw new Error('Deriv did not return an access token.')
-
-        const client = new DerivClient()
-        const next = await buildOAuthSession(client, tokens.access_token)
-        clientRef.current?.close()
-        clientRef.current = client
-
-        localStorage.setItem(TOKEN_KEY, tokens.access_token)
-        localStorage.setItem(AUTH_MODE_KEY, 'oauth')
-        setSession(next)
-      } catch (err) {
-        setNotice(describeOAuthError(err))
-      } finally {
-        finish()
-      }
+    const saved = localStorage.getItem(TOKEN_KEY)
+    if (!saved) {
+      setRestoring(false)
+      return
     }
 
-    const restoreSavedSession = async () => {
-      const saved = localStorage.getItem(TOKEN_KEY)
-      const mode = localStorage.getItem(AUTH_MODE_KEY) === 'oauth' ? 'oauth' : 'pat'
+    const client = new DerivClient()
+    let cancelled = false
+    const deadline = setTimeout(() => {
+      if (!cancelled) setRestoring(false)
+    }, RESTORE_DEADLINE_MS)
 
-      if (!saved) {
-        finish()
-        return
-      }
-
-      const client = new DerivClient()
-      const deadline = setTimeout(finish, RESTORE_DEADLINE_MS)
-      let cancelled = false
-
+    void (async () => {
+      const appId = getSavedAppId()
       try {
-        const next =
-          mode === 'oauth'
-            ? await buildOAuthSession(client, saved)
-            : await restorePatSession(client, saved)
+        const opened = await openAccount(client, {
+          token: saved,
+          appId,
+          accountId: getSavedAccountId(),
+        })
+        if (cancelled) return
 
-        clearTimeout(deadline)
-        if (cancelled) {
-          client.close()
-          return
-        }
         clientRef.current = client
-        setSession(next)
+        setSession(
+          buildDerivSession({
+            token: saved,
+            appId,
+            accounts: opened.accounts,
+            activeAccountId: opened.activeAccountId,
+            balance: opened.balance,
+          })
+        )
       } catch (err) {
-        clearTimeout(deadline)
         client.close()
         if (cancelled) return
         localStorage.removeItem(TOKEN_KEY)
-        localStorage.removeItem(AUTH_MODE_KEY)
         setNotice(
           err instanceof Error
             ? `Your saved Deriv session could not be restored: ${err.message}`
             : 'Your saved Deriv session could not be restored.'
         )
       } finally {
-        if (!cancelled) finish()
+        clearTimeout(deadline)
+        if (!cancelled) setRestoring(false)
       }
-    }
+    })()
 
-    if (stripBase(window.location.pathname).startsWith(OAUTH_CALLBACK_PATH)) {
-      void handleOAuthCallback()
-    } else {
-      void restoreSavedSession()
+    return () => {
+      cancelled = true
+      clearTimeout(deadline)
+      client.close()
     }
-  }, [buildOAuthSession])
+  }, [openAccount])
 
   /* ── handlers ───────────────────────────────────────────────────────── */
 
@@ -177,7 +130,7 @@ export default function App() {
     clientRef.current?.close()
     clientRef.current = client
     localStorage.setItem(TOKEN_KEY, next.token)
-    localStorage.setItem(AUTH_MODE_KEY, next.authMode ?? 'pat')
+    saveAccountId(next.loginid)
     setNotice(null)
     setReconnectError(null)
     setSession(next)
@@ -187,7 +140,6 @@ export default function App() {
     clientRef.current?.close()
     clientRef.current = null
     localStorage.removeItem(TOKEN_KEY)
-    localStorage.removeItem(AUTH_MODE_KEY)
     setSession(null)
   }, [])
 
@@ -206,38 +158,52 @@ export default function App() {
 
     setReconnecting(true)
     setReconnectError(null)
+    const appId = session.appId ?? getSavedAppId()
     try {
-      if (session.authMode === 'oauth') {
-        const next = await buildOAuthSession(client, credential)
-        setSession({ ...next, loginid: session.loginid })
-      } else {
-        const next = await restorePatSession(client, credential)
-        setSession(next)
-      }
+      const opened = await openAccount(client, {
+        token: credential,
+        appId,
+        accountId: session.loginid,
+      })
+      setSession(
+        buildDerivSession({
+          token: credential,
+          appId,
+          accounts: opened.accounts,
+          activeAccountId: opened.activeAccountId,
+          balance: opened.balance,
+        })
+      )
     } catch (err) {
       setReconnectError(err instanceof Error ? err.message : 'Could not reconnect to Deriv.')
     } finally {
       setReconnecting(false)
     }
-  }, [buildOAuthSession, session])
+  }, [openAccount, session])
 
-  /**
-   * OAuth sockets are bound to one account, so switching means requesting a new
-   * OTP for the target account. PAT sessions can switch in place.
-   */
-  const handleSwitchAccount = useCallback(async (account: DerivAccount) => {
-    const client = clientRef.current
-    const current = session
-    if (!client || !current) throw new Error('Not connected to Deriv.')
-    if (account.loginid === current.loginid) return
+  /** An OTP socket is bound to one account, so switching opens a fresh connection. */
+  const handleSwitchAccount = useCallback(
+    async (account: DerivAccount) => {
+      const client = clientRef.current
+      const current = session
+      if (!client || !current) throw new Error('Not connected to Deriv.')
+      if (account.loginid === current.loginid) return
 
-    if (current.authMode === 'oauth') {
-      await attachOAuthSocket(client, current.token, account.loginid)
+      const wsUrl = await requestOtpUrl({
+        token: current.token,
+        accountId: account.loginid,
+        appId: current.appId ?? getSavedAppId(),
+      })
+      await client.connectTo(wsUrl)
+
       let balance = account.balance
       try {
         balance = (await client.getBalance()) ?? balance
-      } catch { /* keep the REST balance */ }
+      } catch {
+        /* keep the last known balance rather than blanking it */
+      }
 
+      saveAccountId(account.loginid)
       setSession({
         ...current,
         loginid: account.loginid,
@@ -248,30 +214,17 @@ export default function App() {
           a.loginid === account.loginid ? { ...a, balance } : a
         ),
       })
-      return
-    }
-
-    await client.switchAccount(account.loginid)
-    const balance = await client.getBalance().catch(() => null)
-    setSession({
-      ...current,
-      loginid: account.loginid,
-      currency: account.currency,
-      isVirtual: account.isVirtual,
-      balance: balance ?? account.balance,
-      accounts: current.accounts.map(a =>
-        a.loginid === account.loginid ? { ...a, balance: balance ?? a.balance } : a
-      ),
-    })
-  }, [attachOAuthSocket, session])
+    },
+    [session]
+  )
 
   /* ── render ─────────────────────────────────────────────────────────── */
 
   if (restoring) {
     return (
-      <div className="min-h-screen bg-black flex flex-col items-center justify-center gap-3">
+      <div className="min-h-screen bg-black flex flex-col items-center justify-center gap-3 px-6">
         <Loader2 className="w-6 h-6 text-emerald-500 animate-spin" />
-        <p className="text-xs text-gray-500">Connecting to Deriv…</p>
+        <p className="text-xs text-gray-500 text-center">Connecting to Deriv…</p>
       </div>
     )
   }
@@ -292,20 +245,4 @@ export default function App() {
       onSwitchAccount={handleSwitchAccount}
     />
   )
-}
-
-/** Restores a Personal Access Token session via the `authorize` handshake. */
-async function restorePatSession(client: DerivClient, token: string): Promise<DerivSession> {
-  await client.connect()
-  const session = await client.authorize(token)
-  session.authMode = 'pat'
-  try {
-    const balance = await client.getBalance()
-    if (balance != null) {
-      session.balance = balance
-      const active = session.accounts.find(a => a.loginid === session.loginid)
-      if (active) active.balance = balance
-    }
-  } catch { /* balance is best-effort */ }
-  return session
 }

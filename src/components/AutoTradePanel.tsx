@@ -158,7 +158,7 @@ export function AutoTradePanel({
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-4 gap-1.5">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
         <Stat label="Trades" value={stats.trades.toString()} color="text-gray-200" />
         <Stat label="Wins" value={stats.wins.toString()} color="text-emerald-400" />
         <Stat label="Win %" value={stats.trades ? `${winRate.toFixed(0)}%` : '—'} color="text-blue-400" />
@@ -191,7 +191,7 @@ export function AutoTradePanel({
         </div>
         <div className="h-40 overflow-y-auto rounded-lg border border-gray-800 bg-[#0c0c16] p-2 space-y-1">
           {log.length === 0 ? (
-            <p className="text-[10px] text-gray-600 text-center py-6">
+            <p className="text-[10px] text-gray-500 text-center py-6">
               No auto trades yet. Activate and wait for a Matches signal.
             </p>
           ) : (
@@ -200,7 +200,7 @@ export function AutoTradePanel({
               return (
                 <div key={entry.id} className="flex items-start gap-1.5 text-[10px] leading-relaxed">
                   <span className={cn('shrink-0 mt-px', style.className)}>{style.icon}</span>
-                  <span className="text-gray-600 font-mono shrink-0">{stamp(entry.time)}</span>
+                  <span className="text-gray-500 font-mono shrink-0">{stamp(entry.time)}</span>
                   <span className={cn('min-w-0 break-words', style.className)}>{entry.text}</span>
                 </div>
               )

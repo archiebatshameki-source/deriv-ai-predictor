@@ -346,8 +346,8 @@ function AccountGroup({ title, icon, tone, accounts, session, switching, onSwitc
               )}
             >
               <span className="min-w-0 flex-1">
-                <span className="flex items-center gap-1.5">
-                  <span className={cn('text-[11px] font-mono truncate', isActive ? 'text-emerald-300' : 'text-gray-300')}>
+                <span className="flex items-center gap-1.5 flex-wrap">
+                  <span className={cn('text-[11px] font-mono break-all', isActive ? 'text-emerald-300' : 'text-gray-300')}>
                     {account.loginid}
                   </span>
                   {isActive && (

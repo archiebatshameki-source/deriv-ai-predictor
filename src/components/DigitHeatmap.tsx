@@ -37,7 +37,7 @@ export function DigitHeatmap({ digitCounts, lastDigit }: DigitHeatmapProps) {
           >
             <span className={cn(
               'text-lg font-bold font-mono tabular-nums',
-              isHot ? 'text-red-600' : isCold ? 'text-blue-600' : 'text-gray-600'
+              isHot ? 'text-red-400' : isCold ? 'text-blue-300' : 'text-gray-200'
             )}>
               {d.digit}
             </span>

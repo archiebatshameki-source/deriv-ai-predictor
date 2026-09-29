@@ -183,8 +183,8 @@ export function PriceChart({ ticks, currentPrice, symbol }: PriceChartProps) {
               className={cn(
                 'flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium transition-all border',
                 chartMode === mode
-                  ? 'bg-violet-100 text-violet-700 border-violet-300'
-                  : 'bg-gray-50 text-gray-400 border-transparent hover:bg-gray-100'
+                  ? 'bg-violet-500/20 text-violet-200 border-violet-500/40'
+                  : 'bg-gray-800/50 text-gray-400 border-transparent hover:bg-gray-700/60'
               )}
             >
               {icon}
@@ -195,7 +195,7 @@ export function PriceChart({ ticks, currentPrice, symbol }: PriceChartProps) {
         {currentPrice != null && (
           <div className={cn(
             'flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-mono font-bold border',
-            isUp ? 'bg-emerald-50 text-emerald-600 border-emerald-200' : 'bg-red-50 text-red-600 border-red-200'
+            isUp ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' : 'bg-red-500/15 text-red-300 border-red-500/30'
           )}>
             <span className={cn('w-1.5 h-1.5 rounded-full animate-pulse', isUp ? 'bg-emerald-500' : 'bg-red-500')} />
             {currentPrice.toFixed(5)}

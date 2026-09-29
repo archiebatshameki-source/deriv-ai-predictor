@@ -82,7 +82,7 @@ export function ValidationMetrics({ predictions }: ValidationMetricsProps) {
         className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-700 transition-colors"
       >
         <div className="flex items-center gap-2">
-          <BarChart3 className="w-4 h-4 text-blue-600" />
+          <BarChart3 className="w-4 h-4 text-blue-400" />
           <span className="text-sm font-medium text-gray-300">Validation & Performance Metrics</span>
         </div>
         {isOpen ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
@@ -91,18 +91,18 @@ export function ValidationMetrics({ predictions }: ValidationMetricsProps) {
       {isOpen && (
         <div className="px-4 pb-4 space-y-3 border-t border-gray-700 pt-3">
           {/* Overall Stats */}
-          <div className="grid grid-cols-3 gap-2">
-            <div className="bg-emerald-50 rounded-lg p-2.5 border border-emerald-200 text-center">
-              <div className="text-lg font-black text-emerald-600 font-mono">{metrics.winRate.toFixed(1)}%</div>
-              <div className="text-[10px] text-emerald-500 font-medium">Win Rate</div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <div className="bg-emerald-500/10 rounded-lg p-2.5 border border-emerald-500/30 text-center">
+              <div className="text-lg font-black text-emerald-400 font-mono">{metrics.winRate.toFixed(1)}%</div>
+              <div className="text-[10px] text-emerald-400 font-medium">Win Rate</div>
             </div>
             <div className="bg-blue-500/20 rounded-lg p-2.5 border border-blue-500/30 text-center">
-              <div className="text-lg font-black text-blue-600 font-mono">{metrics.total}</div>
-              <div className="text-[10px] text-blue-500 font-medium">Total Trades</div>
+              <div className="text-lg font-black text-blue-300 font-mono">{metrics.total}</div>
+              <div className="text-[10px] text-blue-400 font-medium">Total Trades</div>
             </div>
-            <div className="bg-violet-50 rounded-lg p-2.5 border border-violet-200 text-center">
-              <div className="text-lg font-black text-violet-400 font-mono">{metrics.pending}</div>
-              <div className="text-[10px] text-violet-500 font-medium">Pending</div>
+            <div className="bg-violet-500/10 rounded-lg p-2.5 border border-violet-500/30 text-center">
+              <div className="text-lg font-black text-violet-300 font-mono">{metrics.pending}</div>
+              <div className="text-[10px] text-violet-400 font-medium">Pending</div>
             </div>
           </div>
 
@@ -123,23 +123,23 @@ export function ValidationMetrics({ predictions }: ValidationMetricsProps) {
           <div className="grid grid-cols-2 gap-2 text-xs">
             <div className="bg-gray-800/50 rounded-lg p-2 border border-gray-700">
               <div className="text-[10px] text-gray-400 uppercase">Recent 20 Win Rate</div>
-              <div className={cn('font-bold font-mono', metrics.recentWinRate >= 50 ? 'text-emerald-600' : 'text-red-600')}>
+              <div className={cn('font-bold font-mono', metrics.recentWinRate >= 50 ? 'text-emerald-400' : 'text-red-400')}>
                 {metrics.recentWinRate.toFixed(1)}%
               </div>
             </div>
             <div className="bg-gray-800/50 rounded-lg p-2 border border-gray-700">
               <div className="text-[10px] text-gray-400 uppercase">High Conf (≥70%) Win</div>
-              <div className={cn('font-bold font-mono', metrics.highConfWinRate >= 50 ? 'text-emerald-600' : 'text-red-600')}>
+              <div className={cn('font-bold font-mono', metrics.highConfWinRate >= 50 ? 'text-emerald-400' : 'text-red-400')}>
                 {metrics.highConfWinRate.toFixed(1)}%
               </div>
             </div>
             <div className="bg-gray-800/50 rounded-lg p-2 border border-gray-700">
               <div className="text-[10px] text-gray-400 uppercase">Max Win Streak</div>
-              <div className="font-bold font-mono text-amber-600">{metrics.maxStreak}</div>
+              <div className="font-bold font-mono text-amber-400">{metrics.maxStreak}</div>
             </div>
             <div className="bg-gray-800/50 rounded-lg p-2 border border-gray-700">
               <div className="text-[10px] text-gray-400 uppercase">Max Loss Streak</div>
-              <div className="font-bold font-mono text-red-600">{metrics.maxLossStreak}</div>
+              <div className="font-bold font-mono text-red-400">{metrics.maxLossStreak}</div>
             </div>
           </div>
 
@@ -152,11 +152,11 @@ export function ValidationMetrics({ predictions }: ValidationMetricsProps) {
                   const wr = m.total > 0 ? (m.wins / m.total) * 100 : 0
                   return (
                     <div key={strat} className="flex items-center gap-2 text-[11px] bg-gray-800/50 rounded-lg px-2.5 py-1.5 border border-gray-700">
-                      <span className="w-24 truncate font-medium text-gray-400">{metrics.strategyNames[strat] ?? strat}</span>
-                      <div className="flex-1 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                      <span className="w-16 sm:w-24 shrink-0 truncate font-medium text-gray-400">{metrics.strategyNames[strat] ?? strat}</span>
+                      <div className="flex-1 h-1.5 bg-gray-700 rounded-full overflow-hidden">
                         <div className={cn('h-full rounded-full', wr >= 50 ? 'bg-emerald-500' : 'bg-red-400')} style={{ width: `${wr}%` }} />
                       </div>
-                      <span className={cn('font-mono font-bold w-12 text-right', wr >= 50 ? 'text-emerald-600' : 'text-red-600')}>
+                      <span className={cn('font-mono font-bold w-12 text-right', wr >= 50 ? 'text-emerald-400' : 'text-red-400')}>
                         {wr.toFixed(0)}%
                       </span>
                       <span className="text-gray-400 w-8 text-right">({m.total})</span>

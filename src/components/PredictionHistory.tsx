@@ -29,8 +29,8 @@ export function PredictionHistory({ predictions }: PredictionHistoryProps) {
             key={pred.id}
             className={cn(
               'rounded-lg border p-3 transition-all',
-              isWin ? 'bg-emerald-50 border-emerald-200' :
-              isLoss ? 'bg-red-50 border-red-200' :
+              isWin ? 'bg-emerald-500/10 border-emerald-500/30' :
+              isLoss ? 'bg-red-500/10 border-red-500/30' :
               'bg-gray-800/50 border-gray-700'
             )}
           >
@@ -52,7 +52,7 @@ export function PredictionHistory({ predictions }: PredictionHistoryProps) {
                 )}
                 <span className={cn(
                   'text-[10px] font-medium uppercase',
-                  isWin ? 'text-emerald-600' : isLoss ? 'text-red-600' : 'text-amber-500'
+                  isWin ? 'text-emerald-400' : isLoss ? 'text-red-400' : 'text-amber-400'
                 )}>
                   {pred.result === 'pending' ? 'PENDING' : isWin ? 'WIN' : 'LOSS'}
                 </span>
@@ -77,8 +77,8 @@ export function PredictionHistory({ predictions }: PredictionHistoryProps) {
               </div>
               <div className={cn(
                 'text-xs font-mono font-bold',
-                pred.confidence > 80 ? 'text-emerald-600' :
-                pred.confidence > 60 ? 'text-amber-600' : 'text-red-600'
+                pred.confidence > 80 ? 'text-emerald-400' :
+                pred.confidence > 60 ? 'text-amber-400' : 'text-red-400'
               )}>
                 {pred.confidence.toFixed(1)}%
               </div>
@@ -97,11 +97,11 @@ export function PredictionStats({ predictions }: { predictions: Prediction[] }) 
   const winRate = resolved.length > 0 ? (wins / resolved.length) * 100 : 0
 
   return (
-    <div className="grid grid-cols-4 gap-2">
+    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
       <StatBox label="Total" value={predictions.length} color="text-gray-200" />
-      <StatBox label="Wins" value={wins} color="text-emerald-600" icon={<TrendingUp className="w-3 h-3" />} />
-      <StatBox label="Losses" value={losses} color="text-red-600" icon={<TrendingDown className="w-3 h-3" />} />
-      <StatBox label="Win Rate" value={`${winRate.toFixed(0)}%`} color={winRate > 60 ? 'text-emerald-600' : winRate > 40 ? 'text-amber-600' : 'text-red-600'} />
+      <StatBox label="Wins" value={wins} color="text-emerald-400" icon={<TrendingUp className="w-3 h-3" />} />
+      <StatBox label="Losses" value={losses} color="text-red-400" icon={<TrendingDown className="w-3 h-3" />} />
+      <StatBox label="Win Rate" value={`${winRate.toFixed(0)}%`} color={winRate > 60 ? 'text-emerald-400' : winRate > 40 ? 'text-amber-400' : 'text-red-400'} />
     </div>
   )
 }

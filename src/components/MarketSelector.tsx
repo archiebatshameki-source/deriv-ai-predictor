@@ -53,7 +53,7 @@ export function MarketSelector({
         {open && (
           <>
             <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-            <div className="absolute top-full mt-1 left-0 w-72 bg-[#1a1a2e] border border-gray-700 rounded-xl shadow-xl z-50 overflow-hidden">
+            <div className="absolute top-full mt-1 left-0 w-[min(18rem,calc(100vw-2rem))] bg-[#1a1a2e] border border-gray-700 rounded-xl shadow-xl z-50 overflow-hidden">
               <div className="p-2 border-b border-gray-700">
                 <div className="relative">
                   <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
@@ -100,15 +100,15 @@ export function MarketSelector({
           ) : (
             <WifiOff className="w-3.5 h-3.5 text-red-500" />
           )}
-          <span className={cn('text-xs font-medium', connected ? 'text-emerald-600' : 'text-red-500')}>
+          <span className={cn('text-xs font-medium', connected ? 'text-emerald-400' : 'text-red-400')}>
             {connected ? 'LIVE' : 'OFFLINE'}
           </span>
         </div>
 
         {currentPrice != null && (
           <>
-            <div className="h-4 w-px bg-gray-200" />
-            <div className="font-mono text-base font-bold tabular-nums text-gray-900">
+            <div className="h-4 w-px bg-gray-600" />
+            <div className="font-mono text-base font-bold tabular-nums text-gray-100">
               {currentPrice.toFixed(5)}
             </div>
             <div className={cn(

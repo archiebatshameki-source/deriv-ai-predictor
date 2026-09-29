@@ -348,7 +348,7 @@ export function LiveDashboard({
   }, [])
 
   const activeStrategy = STRATEGIES.find(s => s.type === selectedStrategy)
-  const confidenceColor = (c: number) => c > 80 ? 'text-emerald-600' : c > 60 ? 'text-amber-600' : 'text-red-600'
+  const confidenceColor = (c: number) => c > 80 ? 'text-emerald-400' : c > 60 ? 'text-amber-400' : 'text-red-400'
   const isMatches = selectedStrategy === 'matches'
 
   return (
@@ -447,7 +447,7 @@ export function LiveDashboard({
             {/* Digit Heatmap */}
             <div className="bg-[#1a1a2e] rounded-xl border border-gray-700 p-4 shadow-sm">
               <div className="flex items-center gap-2 mb-3">
-                <Target className="w-4 h-4 text-blue-600" />
+                <Target className="w-4 h-4 text-blue-400" />
                 <span className="text-sm font-medium text-gray-300">Digit Distribution</span>
                 <span className="text-[10px] text-gray-400 ml-auto">🔥 Hot • ❄️ Cold</span>
               </div>
@@ -460,7 +460,7 @@ export function LiveDashboard({
               <div className="flex items-center gap-4">
                 <div className="text-center">
                   <div className="text-[10px] text-gray-400">LOW</div>
-                  <div className="text-sm font-mono font-bold text-blue-600">
+                  <div className="text-sm font-mono font-bold text-blue-400">
                     {state.low24h?.toFixed(5) ?? '---'}
                   </div>
                 </div>
@@ -476,7 +476,7 @@ export function LiveDashboard({
                 </div>
                 <div className="text-center">
                   <div className="text-[10px] text-gray-400">HIGH</div>
-                  <div className="text-sm font-mono font-bold text-red-600">
+                  <div className="text-sm font-mono font-bold text-red-400">
                     {state.high24h?.toFixed(5) ?? '---'}
                   </div>
                 </div>
@@ -489,7 +489,7 @@ export function LiveDashboard({
             {/* Strategy Panel */}
             <div className="bg-[#1a1a2e] rounded-xl border border-gray-700 p-4 shadow-sm">
               <div className="flex items-center gap-2 mb-3">
-                <Zap className="w-4 h-4 text-blue-600" />
+                <Zap className="w-4 h-4 text-blue-400" />
                 <span className="text-sm font-medium text-gray-300">Strategy</span>
               </div>
               <StrategyPanel
@@ -581,7 +581,7 @@ export function LiveDashboard({
                   analysisResult?.type === 'sell' ? 'border-red-500/30' : 'border-gray-700'
                 )}>
                   <div className="flex items-center gap-2 mb-3">
-                    <Shield className="w-4 h-4 text-blue-600" />
+                    <Shield className="w-4 h-4 text-blue-400" />
                     <span className="text-sm font-medium text-gray-300">AI Confidence</span>
                   </div>
 
@@ -594,8 +594,8 @@ export function LiveDashboard({
                           {analysisResult.type === 'neutral' && <Activity className="w-5 h-5 text-gray-400" />}
                           <span className={cn(
                             'text-sm font-bold uppercase',
-                            analysisResult.type === 'buy' ? 'text-emerald-600' :
-                            analysisResult.type === 'sell' ? 'text-red-600' : 'text-gray-500'
+                            analysisResult.type === 'buy' ? 'text-emerald-400' :
+                            analysisResult.type === 'sell' ? 'text-red-400' : 'text-gray-400'
                           )}>
                             {analysisResult.type === 'buy' ? 'BUY Signal' : analysisResult.type === 'sell' ? 'SELL Signal' : 'NEUTRAL'}
                           </span>
@@ -620,7 +620,7 @@ export function LiveDashboard({
                         {analysisResult.message}
                       </p>
 
-                      <div className="grid grid-cols-3 gap-2 text-center">
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-center">
                         <div className="bg-gray-800/50 rounded-lg py-1.5 border border-gray-700">
                           <div className="text-[10px] text-gray-400 uppercase">Strategy</div>
                           <div className="text-xs font-medium text-gray-300">{activeStrategy?.icon} {activeStrategy?.label}</div>
@@ -637,7 +637,7 @@ export function LiveDashboard({
                     </div>
                   ) : (
                     <div className="text-center py-6 text-sm text-gray-400">
-                      Click <span className="font-medium text-blue-600">Analyze Market</span> to get AI confidence
+                      Click <span className="font-medium text-blue-400">Analyze Market</span> to get AI confidence
                     </div>
                   )}
                 </div>
@@ -667,7 +667,7 @@ export function LiveDashboard({
 
                   {countdownActive && (
                     <div className="mt-3 text-center">
-                      <span className="text-xs font-medium px-3 py-1 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
+                      <span className="text-xs font-medium px-3 py-1 rounded-full bg-blue-500/20 text-blue-200 border border-blue-500/40">
                         {activeStrategy?.label} • {selectedSymbol} • Match #{matchNumber}
                       </span>
                     </div>
@@ -724,7 +724,7 @@ export function LiveDashboard({
             <div className="bg-[#1a1a2e] rounded-xl border border-gray-700 p-4 shadow-sm">
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
-                  <History className="w-4 h-4 text-blue-600" />
+                  <History className="w-4 h-4 text-blue-400" />
                   <span className="text-sm font-medium text-gray-300">Prediction History</span>
                 </div>
                 <span className="text-[10px] text-gray-400 bg-gray-800 px-2 py-0.5 rounded-full">

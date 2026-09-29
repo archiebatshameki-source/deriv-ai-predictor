@@ -476,7 +476,7 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
                   'text-gray-500'
                 )}
               >
-                <span className="text-gray-600">{new Date(entry.time).toLocaleTimeString()}</span>
+                <span className="text-gray-500">{new Date(entry.time).toLocaleTimeString()}</span>
                 {' '}{entry.message}
               </div>
             ))}
@@ -520,7 +520,7 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
                 <span className="text-gray-500 font-mono text-[10px] w-8">#{h.match}</span>
                 <div className="flex items-center gap-1.5">
                   <span className={cn('font-mono font-black text-lg', digitColor(h.targetDigit))}>{h.targetDigit}</span>
-                  <ArrowLeftRight className="w-3 h-3 text-gray-600" />
+                  <ArrowLeftRight className="w-3 h-3 text-gray-500" />
                   <span className={cn('font-mono font-black text-lg', digitColor(h.targetDigit))}>{h.targetDigit}</span>
                 </div>
                 <span className="text-[10px] font-mono text-gray-400">{h.ticksWaited}t</span>

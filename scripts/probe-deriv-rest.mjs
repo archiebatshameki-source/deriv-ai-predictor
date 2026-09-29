@@ -1,28 +1,31 @@
 /**
- * Probes Deriv's real REST/OAuth surface to confirm which endpoints exist.
+ * Probes Deriv's current Options REST surface to confirm which endpoints exist and
+ * what a browser needs in order to call them.
  *
- * Distinguishing signal: an endpoint that EXISTS answers with an auth error
- * (401 / OAuth error) for a bogus credential. A non-existent path returns 404
- * "404 page not found". That is how the map below was established.
+ * Distinguishing signal: an endpoint that EXISTS answers with an auth error for a bogus
+ * credential. A non-existent path returns 404. That is how the map below was established.
+ *
+ * Also checks the CORS preflight, because the app calls these endpoints directly from the
+ * browser (GitHub Pages is static, so there is no server-side proxy).
  *
  * Run: bun run scripts/probe-deriv-rest.mjs
  */
 
 const REST = 'https://api.derivws.com'
 const BOGUS = 'Bearer bogus-token-probe'
+const ORIGIN = process.env.PROBE_ORIGIN || 'https://archiebatshameki-source.github.io'
 
 async function probe(label, url, init = {}) {
   try {
-    const res = await fetch(url, { ...init, redirect: 'manual', signal: AbortSignal.timeout(15000) })
-    const location = res.headers.get('location') ?? ''
+    const res = await fetch(url, { ...init, signal: AbortSignal.timeout(15000) })
     let body = ''
     try {
-      body = (await res.text()).replace(/\s+/g, ' ').slice(0, 180)
-    } catch { /* no body */ }
-    const verdict = res.status === 404 ? 'MISSING' : 'EXISTS'
-    console.log(`${verdict.padEnd(8)} ${label}`)
-    console.log(`         HTTP ${res.status}${location ? `  → ${location.slice(0, 150)}` : ''}`)
-    if (!location && body) console.log(`         ${body}`)
+      body = (await res.text()).replace(/\s+/g, ' ').slice(0, 140)
+    } catch {
+      /* no body */
+    }
+    console.log(`${(res.status === 404 ? 'MISSING' : 'EXISTS').padEnd(8)} ${label}`)
+    console.log(`         HTTP ${res.status}${body ? `  ${body}` : ''}`)
   } catch (err) {
     console.log(`ERROR    ${label} — ${err.message}`)
   }
@@ -30,24 +33,38 @@ async function probe(label, url, init = {}) {
 
 const auth = { Authorization: BOGUS }
 
-console.log('\n=== Authorize / token (HTTPS OAuth) ===')
-await probe(
-  'GET  /oauth2/auth          authorize endpoint',
-  `${'https://auth.deriv.com'}/oauth2/auth?response_type=code&client_id=bogus&redirect_uri=https%3A%2F%2Fexample.test%2Foauth%2Fcallback&scope=trade&state=ST&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256`
-)
-await probe('POST /oauth2/token          code→token exchange', 'https://auth.deriv.com/oauth2/token', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-  body: 'grant_type=authorization_code&code=x&client_id=bogus',
-})
+console.log('\n=== Options trading REST (auth required) ===')
+await probe('GET  /trading/v1/options/accounts               list accounts', `${REST}/trading/v1/options/accounts`, { headers: auth })
+await probe('POST /trading/v1/options/accounts/{id}/otp      authenticated WS url', `${REST}/trading/v1/options/accounts/DOT90004580/otp`, { method: 'POST', headers: auth })
+await probe('POST /trading/v1/options/accounts               CREATE account (never use to list!)', `${REST}/trading/v1/options/accounts`, { method: 'POST', headers: auth })
+await probe('GET  /trading/v1/options/accounts/nope/nope/nope control (expect MISSING)', `${REST}/trading/v1/options/accounts/nope/nope/nope`, { headers: auth })
 
-console.log('\n=== Options trading REST ===')
-await probe('GET  /trading/v1/options/accounts                  list accounts', `${REST}/trading/v1/options/accounts`, { headers: auth })
-await probe('POST /trading/v1/options/accounts                  CREATE account (never use to list!)', `${REST}/trading/v1/options/accounts`, { method: 'POST', headers: auth })
-await probe('POST /trading/v1/options/accounts/{id}/otp         authenticated WS url', `${REST}/trading/v1/options/accounts/DOT90004580/otp`, { method: 'POST', headers: auth })
-await probe('GET  /trading/v1/options/accounts/{id}              account detail', `${REST}/trading/v1/options/accounts/DOT90004580`, { headers: auth })
-await probe('GET  /trading/v1/options/accounts/{id}/balance      balance', `${REST}/trading/v1/options/accounts/DOT90004580/balance`, { headers: auth })
-await probe('GET  /trading/v1/options/accounts/nope/nope/nope    control (expect MISSING)', `${REST}/trading/v1/options/accounts/nope/nope/nope`, { headers: auth })
+console.log('\n=== Deriv-App-ID is required for PAT auth (per the OpenAPI spec) ===')
+await probe('GET  /accounts  with app id', `${REST}/trading/v1/options/accounts`, {
+  headers: { ...auth, 'Deriv-App-ID': '00000000-0000-0000-0000-000000000000' },
+})
+await probe('GET  /accounts  without app id', `${REST}/trading/v1/options/accounts`, { headers: auth })
+
+console.log(`\n=== CORS preflight from the app origin (${ORIGIN}) ===`)
+{
+  const res = await fetch(`${REST}/trading/v1/options/accounts`, {
+    method: 'OPTIONS',
+    headers: {
+      Origin: ORIGIN,
+      'Access-Control-Request-Method': 'GET',
+      'Access-Control-Request-Headers': 'authorization,deriv-app-id',
+    },
+  })
+  const allowOrigin = res.headers.get('access-control-allow-origin')
+  const allowHeaders = res.headers.get('access-control-allow-headers')
+  console.log(`allow-origin : ${allowOrigin}`)
+  console.log(`allow-headers: ${allowHeaders}`)
+  console.log(
+    allowOrigin === ORIGIN
+      ? 'OK  a browser on this origin may call Deriv directly (no proxy needed)'
+      : 'WARN  browsers on this origin are NOT allowed — a proxy would be required'
+  )
+}
 
 console.log('\n=== WebSocket endpoints (see probe-deriv-ws.mjs) ===')
 console.log('public  wss://api.derivws.com/trading/v1/options/ws/public   no auth — market data')
