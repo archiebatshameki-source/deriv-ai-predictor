@@ -2,6 +2,50 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!--
+      Asset-load retry guard. Deliberately first in <head> so the listener is
+      registered before the bundler injects (at the end of <head>) the <script>
+      and <link rel=stylesheet> tags for our own hashed bundles.
+
+      The runtime serves a MISSING asset as 404 with `cache-control:
+      max-age=14400`, so a browser caches that 404 and replays it for up to four
+      hours. One transient 404 — e.g. the new index.html being served a moment
+      before the new hashed file lands — therefore leaves the page permanently
+      unstyled for that visitor, and the stale-bundle auto-reload cannot fix it
+      because the fresh index.html points at the same hashed filename.
+
+      Re-requesting under a different cache key bypasses the poisoned entry. The
+      file itself is untouched (the static handler ignores the query string); it
+      is simply a cache miss, so the browser goes back to the network. Retries at
+      most once per URL and never retries an already-marked URL, so it cannot loop.
+    -->
+    <script>
+      (function () {
+        var MARKER = 'shogo-asset-retry=1'
+        window.addEventListener(
+          'error',
+          function (e) {
+            var el = e.target
+            if (!el || el === window || !el.tagName) return
+            var tag = el.tagName.toUpperCase()
+            if (tag !== 'LINK' && tag !== 'SCRIPT') return
+            var url = el.getAttribute('href') || el.getAttribute('src')
+            if (!url || url.indexOf(MARKER) !== -1) return
+            var next = url + (url.indexOf('?') === -1 ? '?' : '&') + MARKER
+            var clone = document.createElement(tag === 'LINK' ? 'link' : 'script')
+            if (tag === 'LINK') {
+              clone.rel = 'stylesheet'
+              clone.href = next
+            } else {
+              if (el.type) clone.type = el.type
+              clone.src = next
+            }
+            document.head.appendChild(clone)
+          },
+          true,
+        )
+      })()
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#08080a" />
     <meta name="description" content="Deriv AI Matches Predictor — real-time digit prediction engine for Deriv synthetic indices." />
