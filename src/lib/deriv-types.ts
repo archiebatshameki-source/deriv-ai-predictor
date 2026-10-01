@@ -20,6 +20,7 @@ export const VOLATILITY_MARKETS: MarketSymbol[] = [
 
 export type StrategyType =
   | 'matches'
+  | 'differs'
   | 'over_under'
   | 'rise_fall'
   | 'higher_lower'
@@ -28,6 +29,7 @@ export type StrategyType =
 
 export const STRATEGIES: { type: StrategyType; label: string; icon: string }[] = [
   { type: 'matches', label: 'Matches', icon: '🎯' },
+  { type: 'differs', label: 'Differs', icon: '🚫' },
   { type: 'over_under', label: 'Over/Under', icon: '📊' },
   { type: 'rise_fall', label: 'Rise/Fall', icon: '📈' },
   { type: 'higher_lower', label: 'Higher/Lower', icon: '⬆️' },
@@ -41,6 +43,36 @@ export type TickData = {
   quote: number
   previousQuote?: number
 }
+
+/**
+ * Which way the auto-trader bets on the locked digit.
+ *
+ * `matches` buys DIGITMATCH — the next tick must BE that digit (~1/10).
+ * `differs` buys DIGITDIFF — the next tick must NOT be that digit (~9/10).
+ * They are the two sides of the same locked digit, which is why the trade is
+ * driven by the identical signal but produces very different win rates.
+ */
+export type ContractMode = 'matches' | 'differs'
+
+export const CONTRACT_MODES: {
+  mode: ContractMode
+  contractType: 'DIGITMATCH' | 'DIGITDIFF'
+  label: string
+  blurb: string
+}[] = [
+  {
+    mode: 'matches',
+    contractType: 'DIGITMATCH',
+    label: 'Matches',
+    blurb: 'next tick IS the locked digit — roughly 1 in 10',
+  },
+  {
+    mode: 'differs',
+    contractType: 'DIGITDIFF',
+    label: 'Differs',
+    blurb: 'next tick is NOT the locked digit — roughly 9 in 10',
+  },
+]
 
 export type DigitAnalysis = {
   digit: number

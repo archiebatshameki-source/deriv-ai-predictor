@@ -1,7 +1,8 @@
 import { cn } from '../lib/cn'
 import type { DerivSession } from '../lib/deriv-api'
 import type { AutoTradeStats } from '../lib/trade-stats'
-import { TradeStatsTable } from './TradeStatsTable'
+import { CONTRACT_MODES, type ContractMode, type MarketSymbol } from '../lib/deriv-types'
+import { TradeStatsTable, type StatField } from './TradeStatsTable'
 import {
   Bot, Play, Square, Loader2, Target, Trophy, AlertTriangle,
   CheckCircle2, XCircle, Info, Zap,
@@ -37,6 +38,14 @@ type Props = {
   targetConfidence: number
   watching: boolean
   streamLive: boolean
+  /** Matches buys DIGITMATCH on the locked digit, Differs buys DIGITDIFF. */
+  contractMode: ContractMode
+  onContractModeChange: (mode: ContractMode) => void
+  /** Per-trade risk, editable independently of the stake. */
+  risk: number
+  /** Commits an edited stat column back into session state. */
+  onEditStat: (field: StatField, value: string) => void
+  markets: MarketSymbol[]
 }
 
 const STAKES = [0.35, 1, 2, 5, 10]
@@ -60,15 +69,46 @@ export function AutoTradePanel({
   session, active, onToggle, stake, onStakeChange, minConfidence, onMinConfidenceChange,
   profitTarget, onProfitTargetChange, maxLoss, onMaxLossChange, market,
   log, stats, targetDigit, targetConfidence, watching, streamLive,
+  contractMode, onContractModeChange, onEditStat, markets, risk,
 }: Props) {
   const winRate = stats.trades > 0 ? (stats.wins / stats.trades) * 100 : 0
+  const mode = CONTRACT_MODES.find(m => m.mode === contractMode) ?? CONTRACT_MODES[0]
 
   return (
     <div className="bg-[#1a1a2e] rounded-xl border border-gray-700 p-4 shadow-sm space-y-3">
       <div className="flex items-center gap-2">
         <Bot className={cn('w-4 h-4', active ? 'text-emerald-500' : 'text-gray-500')} />
         <span className="text-sm font-medium text-gray-300">Auto Trade</span>
-        <span className="text-[10px] text-gray-500 ml-auto">Matches strategy</span>
+        <span className="text-[10px] text-gray-500 ml-auto">{mode.label} strategy</span>
+      </div>
+
+      {/* Which side of the locked digit to bet. Matches needs the digit to
+          repeat (~1 in 10); Differs only needs it not to (~9 in 10). */}
+      <div>
+        <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1.5">
+          Contract — {mode.blurb}
+        </div>
+        <div className="grid grid-cols-2 gap-1.5 lg:max-w-lg">
+          {CONTRACT_MODES.map(m => (
+            <button
+              key={m.mode}
+              onClick={() => onContractModeChange(m.mode)}
+              className={cn(
+                'rounded-lg border px-2 py-2 text-xs font-semibold transition-all',
+                contractMode === m.mode
+                  ? m.mode === 'differs'
+                    ? 'bg-emerald-500/15 border-emerald-500/50 text-emerald-300'
+                    : 'bg-blue-500/15 border-blue-500/50 text-blue-300'
+                  : 'bg-gray-800/60 border-gray-700 text-gray-400 hover:bg-gray-700/60'
+              )}
+            >
+              {m.label}
+              <span className="block text-[9px] font-normal opacity-70">
+                {m.contractType}
+              </span>
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Primary one-click activation */}
@@ -84,12 +124,12 @@ export function AutoTradePanel({
         {active ? (
           <>
             <Square className="w-3.5 h-3.5" />
-            STOP AUTO TRADE — MATCHES
+            STOP AUTO TRADE — {mode.label.toUpperCase()}
           </>
         ) : (
           <>
             <Play className="w-3.5 h-3.5" />
-            ACTIVATE AUTO TRADE — MATCHES
+            ACTIVATE AUTO TRADE — {mode.label.toUpperCase()}
           </>
         )}
       </button>
@@ -105,7 +145,7 @@ export function AutoTradePanel({
                 </span>
                 <span className="text-gray-500"> · {targetConfidence.toFixed(1)}% confidence</span>
                 <span className="block text-gray-500">
-                  A {session.isVirtual ? 'demo' : 'live'} DIGITMATCH trade fires the moment it appears.
+                  A {session.isVirtual ? 'demo' : 'live'} {mode.contractType} trade fires the moment it appears.
                 </span>
               </>
             ) : (
@@ -118,7 +158,7 @@ export function AutoTradePanel({
       )}
 
       {/* Settings */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
         <div>
           <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1.5">Stake ({session.currency})</div>
           <div className="flex flex-wrap gap-1">
@@ -219,7 +259,7 @@ export function AutoTradePanel({
         currency={session.currency}
         stake={stake}
         profitTarget={profitTarget}
-        risk={stake}
+        risk={risk}
         market={market}
         maxLoss={maxLoss}
         totalStake={stats.totalStake}
@@ -229,6 +269,8 @@ export function AutoTradePanel({
         won={stats.wins}
         pnl={stats.pnl}
         active={active}
+        onEdit={onEditStat}
+        markets={markets}
       />
 
       {!streamLive && (
@@ -251,10 +293,10 @@ export function AutoTradePanel({
             </span>
           )}
         </div>
-        <div className="h-40 overflow-y-auto rounded-lg border border-gray-800 bg-[#0c0c16] p-2 space-y-1">
+        <div className="h-40 lg:h-52 overflow-y-auto rounded-lg border border-gray-800 bg-[#0c0c16] p-2 space-y-1">
           {log.length === 0 ? (
             <p className="text-[10px] text-gray-500 text-center py-6">
-              No auto trades yet. Activate and wait for a Matches signal.
+              No auto trades yet. Activate and wait for a {mode.label.toLowerCase()} signal.
             </p>
           ) : (
             log.map(entry => {

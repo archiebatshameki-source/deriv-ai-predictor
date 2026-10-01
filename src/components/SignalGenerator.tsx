@@ -40,6 +40,14 @@ type SignalGeneratorProps = {
 const SAMPLE_SIZE = 10
 /** Seconds the entry countdown runs for once a target digit locks. */
 const ARM_SECONDS = 5
+/**
+ * How many Stage B ticks the locked digit gets to show up before the round is
+ * recorded as a miss. Without a bound, a round that never matched was simply
+ * never logged — so every entry in the history was a hit and the panel reported
+ * a permanent 100%. A fair digit stream expects roughly 1 hit in 10 per tick,
+ * so ~20 ticks is the point where "it never came" is a real miss, not bad luck.
+ */
+const WATCH_WINDOW_TICKS = 20
 
 export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHistory, onTargetLocked, onWatchStart, runToken = 0 }: SignalGeneratorProps) {
   const [phase, setPhase] = useState<Phase>('idle')
@@ -171,23 +179,30 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
     setWatchTicks(prev => prev + 1)
     addJournal('watch', `Watching for digit ${target}... last tick was ${lastDigit}`, lastDigit, lastDigit === target)
 
-    if (lastDigit === target) {
-      // WIN!
+    const waited = watchTicks + 1
+
+    /** Logs the round and either loops or parks the engine. */
+    const endRound = (result: 'win' | 'loss') => {
       matchCounterRef.current += 1
       const entry: HistoryEntry = {
         match: matchCounterRef.current,
         targetDigit: target,
-        result: 'win',
-        ticksWaited: watchTicks + 1,
+        result,
+        ticksWaited: waited,
         confidence: targetConfidence,
         time: Date.now(),
       }
       setHistory(prev => [entry, ...prev].slice(0, 50))
-      addJournal('result', `✅ DIGIT ${target} APPEARED! Win after ${watchTicks + 1} ticks`, target, true)
-      setFiredNow(true)
+      addJournal(
+        'result',
+        result === 'win'
+          ? `✅ DIGIT ${target} APPEARED after ${waited} tick(s) — target hit, trade fired`
+          : `⚠️ Digit ${target} did not appear within ${WATCH_WINDOW_TICKS} ticks — round logged as a MISS`,
+        target,
+        result === 'win',
+      )
       setPhase('result')
 
-      // After showing result, either loop or go idle
       setTimeout(() => {
         if (autoModeRef.current) {
           startNewRound()
@@ -199,6 +214,17 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
           lastProcessedRef.current = null
         }
       }, 2500)
+    }
+
+    if (lastDigit === target) {
+      // The locked digit printed — this is the trade moment.
+      setFiredNow(true)
+      endRound('win')
+    } else if (waited >= WATCH_WINDOW_TICKS) {
+      // The digit never showed up inside the window. Recording this is what
+      // keeps the hit rate honest; the old code only ever logged matches, so
+      // the panel showed 100% by construction no matter what actually happened.
+      endRound('loss')
     }
   }, [phase, lastDigit, addJournal, watchTicks, targetConfidence])
 

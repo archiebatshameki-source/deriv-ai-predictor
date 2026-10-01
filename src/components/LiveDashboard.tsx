@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { cn } from '../lib/cn'
 import { useDerivStream } from '../hooks/useDerivStream'
-import { STRATEGIES, type StrategyType } from '../lib/deriv-types'
+import { STRATEGIES, CONTRACT_MODES, VOLATILITY_MARKETS, type StrategyType, type ContractMode } from '../lib/deriv-types'
 import type { DerivAccount, DerivClient, DerivSession } from '../lib/deriv-api'
 import { MarketSelector } from './MarketSelector'
 import { CountdownTimer } from './CountdownTimer'
@@ -14,6 +14,7 @@ import { ModelSettings, type ModelParams, DEFAULT_PARAMS } from './ModelSettings
 import { ValidationMetrics } from './ValidationMetrics'
 import { DerivBroker, type QuickTradeKind } from './DerivBroker'
 import { AutoTradePanel, type AutoTradeLogEntry, type AutoTradeStats } from './AutoTradePanel'
+import type { StatField } from './TradeStatsTable'
 import { accumulateSettlement, emptyStats } from '../lib/trade-stats'
 import { decideAutoFire } from '../lib/auto-fire'
 import {
@@ -24,6 +25,7 @@ import {
 
 const STRATEGY_COLORS: Record<StrategyType, string> = {
   matches: 'from-violet-500 to-purple-600',
+  differs: 'from-rose-500 to-red-600',
   over_under: 'from-blue-500 to-cyan-600',
   rise_fall: 'from-emerald-500 to-teal-600',
   higher_lower: 'from-amber-500 to-orange-600',
@@ -79,6 +81,18 @@ export function LiveDashboard({
   const [runToken, setRunToken] = useState(0)
   const [profitTarget, setProfitTarget] = useState(10)
   const [maxLoss, setMaxLoss] = useState(10)
+  /** Per-trade risk, editable from the Trade columns table. */
+  const [risk, setRisk] = useState(1)
+  /**
+   * Which side of the locked digit the auto-trader bets.
+   *
+   * Defaults to Differs. Firing DIGITMATCH the instant a digit prints is a
+   * ~1-in-10 bet — the contract settles on the *next* tick, so "it just
+   * appeared" carries no information about the one after it. That is why every
+   * fired trade used to lose while the predictor reported 100%. DIGITDIFF is
+   * the other side of the same locked digit and lands roughly 9 times in 10.
+   */
+  const [contractMode, setContractMode] = useState<ContractMode>('differs')
   const [autoLog, setAutoLog] = useState<AutoTradeLogEntry[]>([])
   const [autoStats, setAutoStats] = useState<AutoTradeStats>(emptyStats)
   const [targetDigit, setTargetDigit] = useState<number | null>(null)
@@ -141,14 +155,17 @@ export function LiveDashboard({
 
   const fireAutoTrade = useCallback(async (digit: number, confidence: number) => {
     const amount = stakeRef.current
+    // Which side of the locked digit we bet is the whole ballgame: DIGITMATCH
+    // needs it to repeat (~1 in 10), DIGITDIFF only needs it not to (~9 in 10).
+    const cfg = CONTRACT_MODES.find(m => m.mode === contractMode) ?? CONTRACT_MODES[0]
     pushLog(
       'trade',
-      `Matches signal → DIGITMATCH on digit ${digit} @ ${confidence.toFixed(1)}% — placing ${amount} ${session.currency} stake`
+      `${cfg.label} signal → ${cfg.contractType} on digit ${digit} @ ${confidence.toFixed(1)}% — placing ${amount} ${session.currency} stake`
     )
     try {
       const result = await client.buyContract({
         symbol: selectedSymbol,
-        contractType: 'DIGITMATCH',
+        contractType: cfg.contractType,
         stake: amount,
         currency: session.currency,
         barrier: String(digit),
@@ -159,11 +176,11 @@ export function LiveDashboard({
         'trade',
         `Contract ${result.contractId} bought at ${result.buyPrice.toFixed(2)} — payout ${result.payout.toFixed(2)}`
       )
-      trackContract(result.contractId, `DIGITMATCH ${digit}`, result.buyPrice, result.payout)
+      trackContract(result.contractId, `${cfg.contractType} ${digit}`, result.buyPrice, result.payout)
     } catch (err) {
       pushLog('error', err instanceof Error ? err.message : 'Trade could not be placed.')
     }
-  }, [client, selectedSymbol, session.currency, pushLog, trackContract])
+  }, [client, selectedSymbol, session.currency, pushLog, trackContract, contractMode])
 
   const handleQuickTrade = useCallback(async (kind: QuickTradeKind) => {
     const digit = state.lastDigit ?? 5
@@ -304,6 +321,41 @@ export function LiveDashboard({
     setCountdownActive(false)
     setMatchNumber(0)
   }, [switchSymbol])
+
+  /**
+   * Commits an edited Trade-columns cell.
+   *
+   * Setup columns write straight to their own state. The session-total columns
+   * are normally derived from settlements, so editing one is treated as a manual
+   * override of the running totals — that is what makes them genuinely editable
+   * (e.g. carrying a balance in, or correcting a column). Editing Total payout
+   * recomputes P/L from it so the two stay consistent.
+   */
+  const handleEditStat = useCallback((field: StatField, raw: string) => {
+    const parsed = Number(raw)
+    const n = Number.isFinite(parsed) ? parsed : 0
+    const money = () => Math.max(0, n)
+    const count = () => Math.max(0, Math.round(n))
+
+    switch (field) {
+      case 'stake': setStake(Math.max(0.35, n)); break
+      case 'risk': setRisk(money()); break
+      case 'profitTarget': setProfitTarget(money()); break
+      case 'maxLoss': setMaxLoss(money()); break
+      case 'market': if (raw) handleSymbolChange(raw); break
+      case 'totalStake': setAutoStats(prev => ({ ...prev, totalStake: money() })); break
+      case 'totalPayout':
+        setAutoStats(prev => {
+          const totalPayout = money()
+          return { ...prev, totalPayout, pnl: totalPayout - prev.totalStake }
+        })
+        break
+      case 'runs': setAutoStats(prev => ({ ...prev, trades: count() })); break
+      case 'won': setAutoStats(prev => ({ ...prev, wins: count() })); break
+      case 'lost': setAutoStats(prev => ({ ...prev, losses: count() })); break
+      case 'pnl': setAutoStats(prev => ({ ...prev, pnl: n })); break
+    }
+  }, [handleSymbolChange])
 
   const handleAnalyze = useCallback(() => {
     if (isScanning || countdownActive) return
@@ -749,28 +801,6 @@ export function LiveDashboard({
               onSwitchAccount={onSwitchAccount}
             />
 
-            {/* One-click Matches auto trading */}
-            <AutoTradePanel
-              session={session}
-              active={autoTrade}
-              onToggle={toggleAutoTrade}
-              stake={stake}
-              onStakeChange={setStake}
-              minConfidence={minConfidence}
-              onMinConfidenceChange={setMinConfidence}
-              profitTarget={profitTarget}
-              onProfitTargetChange={setProfitTarget}
-              maxLoss={maxLoss}
-              onMaxLossChange={setMaxLoss}
-              market={selectedSymbol}
-              log={autoLog}
-              stats={autoStats}
-              targetDigit={targetDigit}
-              targetConfidence={targetConfidence}
-              watching={watching}
-              streamLive={state.dataMode === 'deriv'}
-            />
-
             {/* Model Settings */}
             <ModelSettings params={modelParams} onChange={setModelParams} />
 
@@ -791,6 +821,37 @@ export function LiveDashboard({
               <PredictionHistory predictions={predictions} />
             </div>
           </div>
+        </div>
+
+        {/* Auto Trade spans the full width here rather than sitting in the
+            right-hand column: the 11 trade columns and the log get the whole
+            row, which is the space the narrower column was leaving empty. */}
+        <div className="mt-4">
+          <AutoTradePanel
+            session={session}
+            active={autoTrade}
+            onToggle={toggleAutoTrade}
+            stake={stake}
+            onStakeChange={setStake}
+            minConfidence={minConfidence}
+            onMinConfidenceChange={setMinConfidence}
+            profitTarget={profitTarget}
+            onProfitTargetChange={setProfitTarget}
+            maxLoss={maxLoss}
+            onMaxLossChange={setMaxLoss}
+            market={selectedSymbol}
+            log={autoLog}
+            stats={autoStats}
+            targetDigit={targetDigit}
+            targetConfidence={targetConfidence}
+            watching={watching}
+            streamLive={state.dataMode === 'deriv'}
+            contractMode={contractMode}
+            onContractModeChange={setContractMode}
+            risk={risk}
+            onEditStat={handleEditStat}
+            markets={VOLATILITY_MARKETS}
+          />
         </div>
       </main>
 
