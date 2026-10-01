@@ -244,7 +244,7 @@ export function DerivAuth({ onConnected, notice }: Props) {
             <button
               type="button"
               onClick={() => setShowHelp(v => !v)}
-              className="mt-1.5 text-[10px] text-emerald-400/90 hover:text-emerald-300 underline decoration-dotted"
+              className="mt-2 text-[11px] text-emerald-400/90 hover:text-emerald-300 underline decoration-emerald-400/40 underline-offset-4 decoration-1"
             >
               {showHelp ? 'Hide' : 'Where do I find this?'}
             </button>
