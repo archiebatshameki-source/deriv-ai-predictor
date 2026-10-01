@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { cn } from '../lib/cn'
+import { decideWatch } from '../lib/watch'
 import { Brain, Target, Play, Square, Check, X, Eye, Ban, ShieldAlert, Hash, ArrowLeftRight } from 'lucide-react'
 
 type Phase = 'idle' | 'collecting' | 'locked' | 'watching' | 'result'
@@ -29,6 +30,13 @@ type SignalGeneratorProps = {
   onTargetLocked?: (digit: number, confidence: number) => void
   onWatchStart?: (digit: number) => void
   /**
+   * Fired the moment the anticipated tick turns up — the locked digit appearing
+   * on a real tick. This is the hand-off that connects the prediction engine to
+   * the auto trader: the trader no longer has to infer the find by watching the
+   * raw digit stream, it is told, along with how many ticks it took.
+   */
+  onTickFound?: (digit: number, ticksWaited: number) => void
+  /**
    * Bumped by the parent to drive a round from outside this panel. The
    * auto-trade button lives in the dashboard, so one click there has to start
    * the Matches flow here — otherwise "activated" means nothing happens until
@@ -40,16 +48,8 @@ type SignalGeneratorProps = {
 const SAMPLE_SIZE = 10
 /** Seconds the entry countdown runs for once a target digit locks. */
 const ARM_SECONDS = 5
-/**
- * How many Stage B ticks the locked digit gets to show up before the round is
- * recorded as a miss. Without a bound, a round that never matched was simply
- * never logged — so every entry in the history was a hit and the panel reported
- * a permanent 100%. A fair digit stream expects roughly 1 hit in 10 per tick,
- * so ~20 ticks is the point where "it never came" is a real miss, not bad luck.
- */
-const WATCH_WINDOW_TICKS = 20
 
-export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHistory, onTargetLocked, onWatchStart, runToken = 0 }: SignalGeneratorProps) {
+export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHistory, onTargetLocked, onWatchStart, onTickFound, runToken = 0 }: SignalGeneratorProps) {
   const [phase, setPhase] = useState<Phase>('idle')
   const [samples, setSamples] = useState<number[]>([])
   const [targetDigit, setTargetDigit] = useState<number | null>(null)
@@ -70,10 +70,14 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
   const phaseRef = useRef<Phase>('idle')
   const autoModeRef = useRef(false)
   const watchStartRef = useRef(0)
+  const watchTicksRef = useRef(0)
+  const confidenceRef = useRef(0)
+  const startNewRoundRef = useRef<() => void>(() => {})
 
   phaseRef.current = phase
   targetRef.current = targetDigit
   autoModeRef.current = autoMode
+  confidenceRef.current = targetConfidence
 
   const addJournal = useCallback((phase: string, message: string, digit?: number, isTarget?: boolean) => {
     setJournal(prev => [{ time: Date.now(), phase, message, digit, isTarget }, ...prev].slice(0, 100))
@@ -86,6 +90,53 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
 
   const addJournalRef = useRef(addJournal)
   addJournalRef.current = addJournal
+
+  const onTickFoundRef = useRef(onTickFound)
+  onTickFoundRef.current = onTickFound
+
+  /**
+   * Closes a round: records it in the history, then either loops into a fresh
+   * round (auto mode) or parks the engine.
+   *
+   * `ticksWaited` is what the round actually took. It is recorded as telemetry
+   * and is never a reason to end a round — a tick-count ceiling is precisely
+   * what used to stop the auto trader from firing.
+   */
+  const finishRound = useCallback((result: 'win' | 'loss', ticksWaited: number) => {
+    const target = targetRef.current
+    matchCounterRef.current += 1
+    setHistory(prev => [{
+      match: matchCounterRef.current,
+      targetDigit: target ?? -1,
+      result,
+      ticksWaited,
+      confidence: confidenceRef.current,
+      time: Date.now(),
+    }, ...prev].slice(0, 50))
+
+    addJournal(
+      'result',
+      result === 'win'
+        ? `✅ DIGIT ${target} APPEARED after ${ticksWaited} tick(s) — anticipated tick found, trade fired`
+        : `⚠️ Round stopped before digit ${target} appeared (${ticksWaited} tick(s)) — logged as a MISS`,
+      target ?? undefined,
+      result === 'win',
+    )
+    setPhase('result')
+
+    setTimeout(() => {
+      if (autoModeRef.current) {
+        startNewRoundRef.current()
+      } else {
+        setPhase('idle')
+        setSamples([])
+        setTargetDigit(null)
+        setWatchTicks(0)
+        watchTicksRef.current = 0
+        lastProcessedRef.current = null
+      }
+    }, 2500)
+  }, [addJournal])
 
   // ══════════════ STAGE A: Collect samples ══════════════
   useEffect(() => {
@@ -156,6 +207,7 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
       setPhase('watching')
       watchStartRef.current = Date.now()
       setWatchTicks(0)
+      watchTicksRef.current = 0
       lastProcessedRef.current = null // Reset to catch next tick
       addJournalRef.current('watch', `Entry window closed — watching for digit ${target}...`)
       if (target != null) onWatchStartRef.current?.(target)
@@ -176,57 +228,31 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
     const target = targetRef.current
     if (target == null) return
 
-    setWatchTicks(prev => prev + 1)
-    addJournal('watch', `Watching for digit ${target}... last tick was ${lastDigit}`, lastDigit, lastDigit === target)
+    watchTicksRef.current += 1
+    const waited = watchTicksRef.current
+    setWatchTicks(waited)
 
-    const waited = watchTicks + 1
+    const decision = decideWatch({ targetDigit: target, lastDigit, ticksWaited: waited })
 
-    /** Logs the round and either loops or parks the engine. */
-    const endRound = (result: 'win' | 'loss') => {
-      matchCounterRef.current += 1
-      const entry: HistoryEntry = {
-        match: matchCounterRef.current,
-        targetDigit: target,
-        result,
-        ticksWaited: waited,
-        confidence: targetConfidence,
-        time: Date.now(),
-      }
-      setHistory(prev => [entry, ...prev].slice(0, 50))
+    if (decision === 'keep-watching') {
+      // Still waiting. Purely telemetry — the round runs for as many ticks as
+      // it takes, and nothing here can end it early.
       addJournal(
-        'result',
-        result === 'win'
-          ? `✅ DIGIT ${target} APPEARED after ${waited} tick(s) — target hit, trade fired`
-          : `⚠️ Digit ${target} did not appear within ${WATCH_WINDOW_TICKS} ticks — round logged as a MISS`,
-        target,
-        result === 'win',
+        'watch',
+        `Waiting for digit ${target}... last tick was ${lastDigit} — ${waited} tick(s) waited`,
+        lastDigit,
+        false,
       )
-      setPhase('result')
-
-      setTimeout(() => {
-        if (autoModeRef.current) {
-          startNewRound()
-        } else {
-          setPhase('idle')
-          setSamples([])
-          setTargetDigit(null)
-          setWatchTicks(0)
-          lastProcessedRef.current = null
-        }
-      }, 2500)
+      return
     }
 
-    if (lastDigit === target) {
-      // The locked digit printed — this is the trade moment.
-      setFiredNow(true)
-      endRound('win')
-    } else if (waited >= WATCH_WINDOW_TICKS) {
-      // The digit never showed up inside the window. Recording this is what
-      // keeps the hit rate honest; the old code only ever logged matches, so
-      // the panel showed 100% by construction no matter what actually happened.
-      endRound('loss')
-    }
-  }, [phase, lastDigit, addJournal, watchTicks, targetConfidence])
+    // The anticipated tick turned up. This is the trade moment, on whatever tick
+    // it happened to land on. The count is handed to the auto trader as
+    // information; it is never a reason to have stopped waiting.
+    setFiredNow(true)
+    onTickFoundRef.current?.(target, waited)
+    finishRound('win', waited)
+  }, [phase, lastDigit, addJournal, finishRound])
 
   const startNewRound = useCallback(() => {
     setPhase('collecting')
@@ -235,11 +261,16 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
     setTargetFreq(0)
     setTargetConfidence(0)
     setWatchTicks(0)
+    watchTicksRef.current = 0
     setArmSeconds(null)
     setFiredNow(false)
     lastProcessedRef.current = null
     addJournal('system', '🔄 Starting new prediction round...')
   }, [addJournal])
+
+  // Published through a ref so `finishRound` (declared above) can loop without
+  // referencing a `const` that does not exist yet in the render pass.
+  startNewRoundRef.current = startNewRound
 
   // Drive a round from the dashboard's auto-trade button. Without this,
   // activating auto trade arms the trader but nothing happens until the user
@@ -257,31 +288,47 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
     startNewRound()
   }, [connected, phase, startNewRound])
 
-  const handleAutoToggle = useCallback(() => {
-    if (autoMode) {
-      setAutoMode(false)
-      setPhase('idle')
-      setSamples([])
-      setTargetDigit(null)
-      setWatchTicks(0)
-      setArmSeconds(null)
-      lastProcessedRef.current = null
-    } else {
-      setAutoMode(true)
-      startNewRound()
-    }
-  }, [autoMode, startNewRound])
-
   const handleStop = useCallback(() => {
+    const wasWatching = phaseRef.current === 'watching'
+    const target = targetRef.current
+    const waited = watchTicksRef.current
+
     setAutoMode(false)
+    // Set the ref too: the round-end timeout reads it, and state updates are not
+    // visible until the next render — without this a STOP mid-round could still
+    // kick off another round.
+    autoModeRef.current = false
+    setArmSeconds(null)
+    setFiredNow(false)
+    lastProcessedRef.current = null
+
+    // A stop mid-watch is the one honest way a round can end without the digit
+    // turning up. Record it, so an unbounded watch never reports a hit rate that
+    // is 100% by construction.
+    if (wasWatching && target != null && waited > 0) {
+      watchTicksRef.current = 0
+      finishRound('loss', waited)
+      return
+    }
+
     setPhase('idle')
     setSamples([])
     setTargetDigit(null)
     setWatchTicks(0)
-    setArmSeconds(null)
-    setFiredNow(false)
-    lastProcessedRef.current = null
-  }, [])
+    watchTicksRef.current = 0
+  }, [finishRound])
+
+  // Turning auto trade off abandons whatever round is in flight, so it goes
+  // through the same stop path — otherwise a round dropped this way would leave
+  // no trace in the history.
+  const handleAutoToggle = useCallback(() => {
+    if (autoMode) {
+      handleStop()
+    } else {
+      setAutoMode(true)
+      startNewRound()
+    }
+  }, [autoMode, startNewRound, handleStop])
 
   // ══════════════ Derived stats ══════════════
   const wins = history.filter(h => h.result === 'win').length
@@ -486,6 +533,7 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
                 </p>
                 <p className="text-[10px] text-gray-500 mt-1">
                   Ticks waited: <span className="text-white font-mono">{watchTicks}</span>
+                  <span className="text-emerald-400/80"> · no tick limit</span>
                 </p>
               </div>
 
@@ -493,7 +541,9 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
               <div className="w-full max-w-xs mx-auto">
                 <div className="flex items-center gap-2">
                   <div className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
-                  <p className="text-[10px] text-gray-500 font-mono">Scanning every tick...</p>
+                  <p className="text-[10px] text-gray-500 font-mono">
+                    Fires the moment {targetDigit} prints — however many ticks it takes
+                  </p>
                 </div>
               </div>
 

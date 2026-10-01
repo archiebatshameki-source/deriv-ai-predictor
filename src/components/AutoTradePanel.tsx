@@ -37,6 +37,8 @@ type Props = {
   targetDigit: number | null
   targetConfidence: number
   watching: boolean
+  /** Ticks the engine waited for the last anticipated tick (null before a find). */
+  foundTicks: number | null
   streamLive: boolean
   /** Matches buys DIGITMATCH on the locked digit, Differs buys DIGITDIFF. */
   contractMode: ContractMode
@@ -68,7 +70,7 @@ function stamp(time: number): string {
 export function AutoTradePanel({
   session, active, onToggle, stake, onStakeChange, minConfidence, onMinConfidenceChange,
   profitTarget, onProfitTargetChange, maxLoss, onMaxLossChange, market,
-  log, stats, targetDigit, targetConfidence, watching, streamLive,
+  log, stats, targetDigit, targetConfidence, watching, foundTicks, streamLive,
   contractMode, onContractModeChange, onEditStat, markets, risk,
 }: Props) {
   const winRate = stats.trades > 0 ? (stats.wins / stats.trades) * 100 : 0
@@ -145,8 +147,14 @@ export function AutoTradePanel({
                 </span>
                 <span className="text-gray-500"> · {targetConfidence.toFixed(1)}% confidence</span>
                 <span className="block text-gray-500">
-                  A {session.isVirtual ? 'demo' : 'live'} {mode.contractType} trade fires the moment it appears.
+                  No tick limit — a {session.isVirtual ? 'demo' : 'live'} {mode.contractType} trade
+                  fires the moment it appears, however many ticks that takes.
                 </span>
+                {foundTicks != null && (
+                  <span className="block text-emerald-400/80">
+                    Last find: {foundTicks} tick{foundTicks === 1 ? '' : 's'} waited
+                  </span>
+                )}
               </>
             ) : (
               <span className="text-gray-400">

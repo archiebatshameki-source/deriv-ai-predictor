@@ -64,6 +64,34 @@ check('high confidence passes a 20% filter',
 check('throttle outranks the confidence filter',
   decideAutoFire({ ...base, targetConfidence: 0, minConfidence: 10, lastTradeAt: base.now - 100 }), 'throttled')
 
+// ── Tick-count independence ─────────────────────────────────────────────────
+// The engine now waits for the anticipated tick for as long as it takes, so the
+// trader must take the signal at ANY tick count. A ceiling here would be the
+// same bug in a different place: a real find that never became a trade.
+let firedAtEveryTick = true
+let firstNonFire = -1
+for (let t = 1; t <= 500; t++) {
+  if (decideAutoFire({ ...base, ticksWaited: t }) !== 'fire') {
+    firedAtEveryTick = false
+    if (firstNonFire < 0) firstNonFire = t
+  }
+}
+check('fires at every tick count 1..500 (old engine gave up at 20)', firstNonFire, -1)
+if (firedAtEveryTick) pass++
+
+// The specific case that used to be lost: the digit arriving just past the old
+// 20-tick watch window.
+check('fires on a find at tick 21 — past the old watch window',
+  decideAutoFire({ ...base, ticksWaited: 21 }), 'fire')
+check('fires on a find at tick 100',
+  decideAutoFire({ ...base, ticksWaited: 100 }), 'fire')
+
+// A long wait is telemetry, not a reason to skip.
+check('a long wait does not downgrade the decision',
+  decideAutoFire({ ...base, ticksWaited: 500 }), 'fire')
+check('omitting the tick count entirely changes nothing (it is unused)',
+  decideAutoFire({ ...base }), decideAutoFire({ ...base, ticksWaited: 137 }))
+
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail > 0) process.exit(1)
 console.log('ALL PASS')

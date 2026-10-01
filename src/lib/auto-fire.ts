@@ -20,11 +20,28 @@ export type FireDecisionInput = {
   alreadyTradedTarget: number | null
   now: number
   lastTradeAt: number
+  /**
+   * How many ticks the engine waited for the anticipated tick. Carried so the
+   * trader can log and record it, and deliberately NOT consulted below — the
+   * trade fires on the tick turning up, at any tick count. This is the whole
+   * point: a tick ceiling must never decide whether the signal is taken.
+   */
+  ticksWaited?: number
   /** One contract at a time; avoids double-firing on the same printed digit. */
   throttleMs?: number
 }
 
-export const DEFAULT_FIRE_THROTTLE_MS = 8000
+/**
+ * Burst guard only.
+ *
+ * `alreadyTradedTarget` plus the engine clearing `watching` already guarantee
+ * one trade per round, so this exists just to absorb the handful of re-renders
+ * a single printed digit produces. It must stay well under the shortest
+ * possible round (Stage A's 10 ticks plus the 5s entry countdown) — at the old
+ * 8s it could swallow the next genuine signal outright, which is the same class
+ * of bug as the tick ceiling: a real find that never became a trade.
+ */
+export const DEFAULT_FIRE_THROTTLE_MS = 1200
 
 export function decideAutoFire(input: FireDecisionInput): FireDecision {
   const {
@@ -33,6 +50,7 @@ export function decideAutoFire(input: FireDecisionInput): FireDecision {
     throttleMs = DEFAULT_FIRE_THROTTLE_MS,
   } = input
 
+  // `ticksWaited` is intentionally absent from every condition here.
   if (!autoTrade || !watching) return 'idle'
   if (targetDigit == null || lastDigit !== targetDigit) return 'idle'
   if (alreadyTradedTarget === targetDigit) return 'idle'

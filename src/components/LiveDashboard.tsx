@@ -98,6 +98,7 @@ export function LiveDashboard({
   const [targetDigit, setTargetDigit] = useState<number | null>(null)
   const [targetConfidence, setTargetConfidence] = useState(0)
   const [watching, setWatching] = useState(false)
+  const [foundTicks, setFoundTicks] = useState<number | null>(null)
   const [quickTradeBusy, setQuickTradeBusy] = useState<string | null>(null)
   const [quickTradeMessage, setQuickTradeMessage] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
   const logIdRef = useRef(0)
@@ -105,6 +106,7 @@ export function LiveDashboard({
   const tradedTargetRef = useRef<number | null>(null)
   const autoTradeRef = useRef(false)
   const stakeRef = useRef(1)
+  const foundTicksRef = useRef<number | null>(null)
 
   const { state, predictions, setPredictions, analyze, generatePrediction, getMatchPrediction, switchSymbol } = useDerivStream(selectedSymbol)
 
@@ -158,9 +160,10 @@ export function LiveDashboard({
     // Which side of the locked digit we bet is the whole ballgame: DIGITMATCH
     // needs it to repeat (~1 in 10), DIGITDIFF only needs it not to (~9 in 10).
     const cfg = CONTRACT_MODES.find(m => m.mode === contractMode) ?? CONTRACT_MODES[0]
+    const waited = foundTicksRef.current
     pushLog(
       'trade',
-      `${cfg.label} signal → ${cfg.contractType} on digit ${digit} @ ${confidence.toFixed(1)}% — placing ${amount} ${session.currency} stake`
+      `${cfg.label} signal → ${cfg.contractType} on digit ${digit} @ ${confidence.toFixed(1)}%${waited != null ? ` after ${waited} tick(s) waited` : ''} — placing ${amount} ${session.currency} stake`
     )
     try {
       const result = await client.buyContract({
@@ -223,18 +226,34 @@ export function LiveDashboard({
     setTargetConfidence(confidence)
     setWatching(false)
     tradedTargetRef.current = null
+    foundTicksRef.current = null
+    setFoundTicks(null)
     pushLog('signal', `Matches target locked — digit ${digit} at ${confidence.toFixed(1)}% confidence`)
   }, [pushLog])
 
   const handleWatchStart = useCallback((digit: number) => {
     setWatching(true)
-    if (autoTradeRef.current) pushLog('info', `Armed — waiting for digit ${digit} to appear`)
+    if (autoTradeRef.current) pushLog('info', `Armed — waiting for digit ${digit} to appear, no tick limit`)
   }, [pushLog])
 
-  // Fire a trade the moment the locked digit prints. That appearance IS the
+  /**
+   * The engine telling the trader the anticipated tick has turned up, and how
+   * long it took. Recording the count here is what lets the log and the panel
+   * report the real wait without it ever influencing whether the trade fires.
+   */
+  const handleTickFound = useCallback((digit: number, ticksWaited: number) => {
+    foundTicksRef.current = ticksWaited
+    setFoundTicks(ticksWaited)
+    pushLog('signal', `Anticipated tick found — digit ${digit} printed after ${ticksWaited} tick(s)`)
+  }, [pushLog])
+
+  // Fire a trade the moment the anticipated tick prints. That appearance IS the
   // genuine Matches signal: the engine picked the digit and Stage B has now
-  // confirmed it on a real tick. The user's confidence filter is the only thing
-  // that can stop it, and it says so out loud rather than failing silently.
+  // confirmed it on a real tick — at whatever tick it landed on. The engine also
+  // reports how long the wait was; it is passed through as telemetry only, so a
+  // long wait can never be the reason a trade is dropped. The user's confidence
+  // filter is the only thing that can stop it, and it says so out loud rather
+  // than failing silently.
   useEffect(() => {
     const now = Date.now()
     const decision = decideAutoFire({
@@ -247,6 +266,7 @@ export function LiveDashboard({
       alreadyTradedTarget: tradedTargetRef.current,
       now,
       lastTradeAt: lastTradeAtRef.current,
+      ticksWaited: foundTicksRef.current ?? 0,
     })
 
     if (decision === 'idle' || decision === 'throttled') return
@@ -612,6 +632,7 @@ export function LiveDashboard({
                 lastDigitHistory={lastDigitHistory}
                 onTargetLocked={handleTargetLocked}
                 onWatchStart={handleWatchStart}
+                onTickFound={handleTickFound}
                 runToken={runToken}
               />
             )}
@@ -845,6 +866,7 @@ export function LiveDashboard({
             targetDigit={targetDigit}
             targetConfidence={targetConfidence}
             watching={watching}
+            foundTicks={foundTicks}
             streamLive={state.dataMode === 'deriv'}
             contractMode={contractMode}
             onContractModeChange={setContractMode}
