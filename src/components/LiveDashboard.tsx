@@ -15,6 +15,7 @@ import { ValidationMetrics } from './ValidationMetrics'
 import { DerivBroker, type QuickTradeKind } from './DerivBroker'
 import { AutoTradePanel, type AutoTradeLogEntry, type AutoTradeStats } from './AutoTradePanel'
 import { accumulateSettlement, emptyStats } from '../lib/trade-stats'
+import { decideAutoFire } from '../lib/auto-fire'
 import {
   Zap, Brain, Activity, BarChart3, Target, History,
   Play, Square, TrendingUp, TrendingDown, ArrowUp, ArrowDown,
@@ -65,7 +66,17 @@ export function LiveDashboard({
   // ── Deriv auto trading ──────────────────────────────────────────────
   const [autoTrade, setAutoTrade] = useState(false)
   const [stake, setStake] = useState(1)
-  const [minConfidence, setMinConfidence] = useState(10)
+  /**
+   * 0 = fire on every confirmed Matches hit.
+   *
+   * The engine forces confidence to 0 whenever its regime filter reports
+   * "no_signal" (which it does until 50+ ticks accumulate, and on any
+   * near-uniform digit distribution), so a non-zero default silently blocked
+   * every auto trade. 0 keeps the flow firing and lets the user tighten it.
+   */
+  const [minConfidence, setMinConfidence] = useState(0)
+  /** Bumped to drive the Matches round from the auto-trade button. */
+  const [runToken, setRunToken] = useState(0)
   const [profitTarget, setProfitTarget] = useState(10)
   const [maxLoss, setMaxLoss] = useState(10)
   const [autoLog, setAutoLog] = useState<AutoTradeLogEntry[]>([])
@@ -203,19 +214,41 @@ export function LiveDashboard({
     if (autoTradeRef.current) pushLog('info', `Armed — waiting for digit ${digit} to appear`)
   }, [pushLog])
 
-  // Fire a trade the moment the locked digit prints.
+  // Fire a trade the moment the locked digit prints. That appearance IS the
+  // genuine Matches signal: the engine picked the digit and Stage B has now
+  // confirmed it on a real tick. The user's confidence filter is the only thing
+  // that can stop it, and it says so out loud rather than failing silently.
   useEffect(() => {
-    if (!autoTrade || !watching) return
-    if (targetDigit == null || state.lastDigit !== targetDigit) return
-    if (targetConfidence < minConfidence) return
-    if (tradedTargetRef.current === targetDigit) return
     const now = Date.now()
-    if (now - lastTradeAtRef.current < 8000) return
+    const decision = decideAutoFire({
+      autoTrade,
+      watching,
+      targetDigit,
+      lastDigit: state.lastDigit,
+      targetConfidence,
+      minConfidence,
+      alreadyTradedTarget: tradedTargetRef.current,
+      now,
+      lastTradeAt: lastTradeAtRef.current,
+    })
+
+    if (decision === 'idle' || decision === 'throttled') return
+
+    if (decision === 'skip-confidence') {
+      tradedTargetRef.current = targetDigit
+      setWatching(false)
+      pushLog(
+        'info',
+        `Digit ${targetDigit} printed but the trade was skipped — signal confidence ${targetConfidence.toFixed(1)}% is below the ${minConfidence}% filter.`
+      )
+      return
+    }
+
     tradedTargetRef.current = targetDigit
     lastTradeAtRef.current = now
     setWatching(false)
-    void fireAutoTrade(targetDigit, targetConfidence)
-  }, [autoTrade, watching, targetDigit, targetConfidence, minConfidence, state.lastDigit, fireAutoTrade])
+    void fireAutoTrade(targetDigit!, targetConfidence)
+  }, [autoTrade, watching, targetDigit, targetConfidence, minConfidence, state.lastDigit, fireAutoTrade, pushLog])
 
   // Reset the arming state whenever auto trading is switched off.
   useEffect(() => {
@@ -248,6 +281,9 @@ export function LiveDashboard({
       pushLog(next ? 'info' : 'info', next
         ? `Auto trade ACTIVATED — Matches, stake ${stakeRef.current} ${session.currency}, min confidence ${minConfidence}%`
         : 'Auto trade stopped')
+      // Starting the round here is what makes one click enough: the trader is
+      // armed AND the Matches flow begins scanning.
+      if (next) setRunToken(t => t + 1)
       return next
     })
   }, [pushLog, minConfidence, session.currency])
@@ -524,6 +560,7 @@ export function LiveDashboard({
                 lastDigitHistory={lastDigitHistory}
                 onTargetLocked={handleTargetLocked}
                 onWatchStart={handleWatchStart}
+                runToken={runToken}
               />
             )}
 

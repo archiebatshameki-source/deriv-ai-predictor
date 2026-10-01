@@ -40,7 +40,7 @@ type Props = {
 }
 
 const STAKES = [0.35, 1, 2, 5, 10]
-const CONFIDENCE_STEPS = [5, 10, 15, 20, 25]
+const CONFIDENCE_STEPS = [0, 5, 10, 20]
 const TARGET_STEPS = [5, 10, 20, 50]
 
 const LOG_STYLE: Record<AutoTradeLogKind, { icon: React.ReactNode; className: string }> = {
@@ -140,7 +140,7 @@ export function AutoTradePanel({
         </div>
         <div>
           <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1.5">
-            Min confidence: {minConfidence}%
+            Signal filter: {minConfidence === 0 ? 'off — every confirmed match' : `${minConfidence}% or higher`}
           </div>
           <div className="flex flex-wrap gap-1">
             {CONFIDENCE_STEPS.map(c => (
@@ -154,7 +154,7 @@ export function AutoTradePanel({
                     : 'bg-gray-800/60 border-gray-700 text-gray-400 hover:bg-gray-700/60'
                 )}
               >
-                {c}%
+                {c === 0 ? 'Off' : `${c}%`}
               </button>
             ))}
           </div>

@@ -28,15 +28,20 @@ type SignalGeneratorProps = {
   lastDigitHistory: number[]
   onTargetLocked?: (digit: number, confidence: number) => void
   onWatchStart?: (digit: number) => void
+  /**
+   * Bumped by the parent to drive a round from outside this panel. The
+   * auto-trade button lives in the dashboard, so one click there has to start
+   * the Matches flow here — otherwise "activated" means nothing happens until
+   * the user also presses a button inside this card.
+   */
+  runToken?: number
 }
 
 const SAMPLE_SIZE = 10
 /** Seconds the entry countdown runs for once a target digit locks. */
 const ARM_SECONDS = 5
-/** How long the TRADE NOW handoff stays on screen before Stage B takes over. */
-const TRADE_NOW_MS = 1200
 
-export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHistory, onTargetLocked, onWatchStart }: SignalGeneratorProps) {
+export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHistory, onTargetLocked, onWatchStart, runToken = 0 }: SignalGeneratorProps) {
   const [phase, setPhase] = useState<Phase>('idle')
   const [samples, setSamples] = useState<number[]>([])
   const [targetDigit, setTargetDigit] = useState<number | null>(null)
@@ -48,8 +53,8 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
   const [autoMode, setAutoMode] = useState(false)
   /** Seconds left on the entry countdown shown after a target locks. */
   const [armSeconds, setArmSeconds] = useState<number | null>(null)
-  /** True for the brief TRADE NOW handoff once the countdown hits zero. */
-  const [tradeNow, setTradeNow] = useState(false)
+  /** True from the moment the locked digit prints — this is the trade moment. */
+  const [firedNow, setFiredNow] = useState(false)
 
   const lastProcessedRef = useRef<number | null>(null)
   const matchCounterRef = useRef(0)
@@ -122,7 +127,7 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
     })
   }, [phase, lastDigit, addJournal, onAnalyze, onTargetLocked])
 
-  // ══════════════ ENTRY COUNTDOWN: locked → TRADE NOW → watching ══════════════
+  // ══════════════ ENTRY COUNTDOWN: locked → watching ══════════════
   // Deadline-based, and deliberately independent of the parent's callback
   // identities: the live tick stream re-renders this panel several times a
   // second, so a timer keyed on props would be cleared and restarted before it
@@ -131,47 +136,27 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
     if (phase !== 'locked') return
 
     const deadline = Date.now() + ARM_SECONDS * 1000
-    let handoff: ReturnType<typeof setTimeout> | undefined
 
     const tick = () => {
       const left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000))
+      setArmSeconds(left)
+      if (left > 0) return
 
-      if (left > 0) {
-        setArmSeconds(left)
-        return
-      }
-
-      // Countdown finished — hold on TRADE NOW, then hand over to Stage B.
+      // Countdown finished — Stage B takes over and watches for the digit.
       clearInterval(timer)
-      setArmSeconds(0)
-      setTradeNow(true)
-
       const target = targetRef.current
-      handoff = setTimeout(() => {
-        setTradeNow(false)
-        setPhase('watching')
-        watchStartRef.current = Date.now()
-        setWatchTicks(0)
-        lastProcessedRef.current = null // Reset to catch next tick
-        addJournalRef.current('watch', `Entry window closed — watching for digit ${target}...`)
-        if (target != null) onWatchStartRef.current?.(target)
-      }, TRADE_NOW_MS)
+      setPhase('watching')
+      watchStartRef.current = Date.now()
+      setWatchTicks(0)
+      lastProcessedRef.current = null // Reset to catch next tick
+      addJournalRef.current('watch', `Entry window closed — watching for digit ${target}...`)
+      if (target != null) onWatchStartRef.current?.(target)
     }
 
     setArmSeconds(ARM_SECONDS)
-    setTradeNow(false)
     const timer = setInterval(tick, 100)
-    return () => {
-      clearInterval(timer)
-      if (handoff) clearTimeout(handoff)
-    }
+    return () => clearInterval(timer)
   }, [phase])
-
-  // Any exit from the locked phase (stop, new round, auto toggle) clears the
-  // TRADE NOW handoff, so it can never linger into an unrelated round.
-  useEffect(() => {
-    if (phase !== 'locked' && tradeNow) setTradeNow(false)
-  }, [phase, tradeNow])
 
   // ══════════════ STAGE B: Watch for target digit ══════════════
   useEffect(() => {
@@ -199,6 +184,7 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
       }
       setHistory(prev => [entry, ...prev].slice(0, 50))
       addJournal('result', `✅ DIGIT ${target} APPEARED! Win after ${watchTicks + 1} ticks`, target, true)
+      setFiredNow(true)
       setPhase('result')
 
       // After showing result, either loop or go idle
@@ -224,9 +210,21 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
     setTargetConfidence(0)
     setWatchTicks(0)
     setArmSeconds(null)
+    setFiredNow(false)
     lastProcessedRef.current = null
     addJournal('system', '🔄 Starting new prediction round...')
   }, [addJournal])
+
+  // Drive a round from the dashboard's auto-trade button. Without this,
+  // activating auto trade arms the trader but nothing happens until the user
+  // also presses a button inside this panel.
+  useEffect(() => {
+    if (runToken <= 0) return
+    const p = phaseRef.current
+    if (p === 'collecting' || p === 'locked' || p === 'watching') return
+    setAutoMode(true)
+    startNewRound()
+  }, [runToken, startNewRound])
 
   const handlePredictionClick = useCallback(() => {
     if (!connected || phase === 'collecting' || phase === 'watching') return
@@ -255,6 +253,7 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
     setTargetDigit(null)
     setWatchTicks(0)
     setArmSeconds(null)
+    setFiredNow(false)
     lastProcessedRef.current = null
   }, [])
 
@@ -411,15 +410,12 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
                 <p className="text-[11px] text-gray-400 font-mono">
                   Target: <span className="text-white font-bold">{targetDigit}</span> — freq: <span className="text-white font-bold">{targetFreq}/{SAMPLE_SIZE}</span>
                 </p>
-                {tradeNow ? (
-                  <p className="mt-2 text-lg font-black tracking-wider text-emerald-300 animate-pulse">
-                    TRADE NOW
-                  </p>
-                ) : armSeconds != null ? (
+                {armSeconds != null && (
                   <>
                     <p className="text-[11px] text-emerald-400 font-mono mt-1">
                       Entry in{' '}
-                      <span className="text-white font-bold tabular-nums">{armSeconds}s</span>
+                      <span className="text-white font-bold tabular-nums">{armSeconds}</span>{' '}
+                      second{armSeconds === 1 ? '' : 's'}
                     </p>
                     <div className="mt-2 flex items-center gap-2">
                       <div className="flex-1 h-1.5 rounded-full bg-black/50 overflow-hidden">
@@ -433,7 +429,7 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
                       </span>
                     </div>
                   </>
-                ) : null}
+                )}
               </div>
             </div>
           )}
@@ -512,6 +508,11 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
                 <p className="text-xs text-gray-400 mt-1">
                   Digit <span className="text-white font-bold">{targetDigit}</span> appeared after <span className="text-white font-bold">{watchTicks}</span> ticks
                 </p>
+                {firedNow && (
+                  <p className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-emerald-500/40 bg-emerald-500/15 px-3 py-1 text-sm font-black tracking-wider text-emerald-300 animate-pulse">
+                    TRADE NOW
+                  </p>
+                )}
               </div>
               <div className="flex items-center justify-center gap-4">
                 <div className="text-center">
