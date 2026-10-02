@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { cn } from '../lib/cn'
 import { decideWatch } from '../lib/watch'
+import { ENTRY_SECONDS, secondsLeft, isCountdownComplete } from '../lib/entry-countdown'
 import { Brain, Target, Play, Square, Check, X, Eye, Ban, ShieldAlert, Hash } from 'lucide-react'
 
-type Phase = 'idle' | 'collecting' | 'watching' | 'result'
+type Phase = 'idle' | 'collecting' | 'countdown' | 'watching' | 'result'
 
 type JournalEntry = {
   time: number
@@ -29,10 +30,19 @@ type SignalGeneratorProps = {
   onTargetLocked?: (digit: number, confidence: number) => void
   onWatchStart?: (digit: number) => void
   /**
-   * Fired the moment the predicted digit turns up on a real tick. This is the
-   * hand-off that connects the prediction engine to the auto trader: the trader
-   * no longer infers the find by diffing the raw digit stream — it is told.
-   * The predicted digit IS the signal; there is no tick count involved.
+   * Fired when the post-lock entry countdown reaches zero — the TRADE NOW
+   * moment. This is the hand-off that connects the prediction engine to the
+   * auto trader: the trader is told exactly when to place the contract instead
+   * of inferring it by watching the raw digit stream.
+   *
+   * The predicted digit is the whole signal. The tick count is not an input to
+   * this decision, so no tick count can stop a genuine signal being traded.
+   */
+  onTradeNow?: (digit: number, confidence: number) => void
+  /**
+   * Fired later, when the predicted digit actually turns up on a real tick.
+   * Used to score the round (win/loss) — the trade itself was already placed at
+   * the TRADE NOW hand-off above.
    */
   onTickFound?: (digit: number) => void
   /**
@@ -45,8 +55,36 @@ type SignalGeneratorProps = {
 }
 
 const SAMPLE_SIZE = 10
+/** How long the TRADE NOW badge is held on screen before watching resumes. */
+const TRADE_NOW_HOLD_MS = 1200
 
-export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHistory, onTargetLocked, onWatchStart, onTickFound, runToken = 0 }: SignalGeneratorProps) {
+/**
+ * The model's confidence in the digit it locked, shown wherever the locked digit
+ * is on screen so the number that drove the decision is always visible rather
+ * than buried in the journal.
+ */
+function AIConfidence({ value }: { value: number }) {
+  const pct = Math.min(100, Math.max(0, value))
+  return (
+    <div className="rounded-xl border border-violet-500/30 bg-violet-500/10 p-3 text-left">
+      <div className="flex items-center justify-between gap-2">
+        <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-violet-300">
+          <Brain className="h-3 w-3" />
+          AI Confidence
+        </span>
+        <span className="font-mono text-sm font-black tabular-nums text-white">{pct.toFixed(1)}%</span>
+      </div>
+      <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-black/40">
+        <div
+          className="h-full rounded-full bg-gradient-to-r from-violet-500 to-fuchsia-400 transition-[width] duration-300"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+    </div>
+  )
+}
+
+export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHistory, onTargetLocked, onWatchStart, onTradeNow, onTickFound, runToken = 0 }: SignalGeneratorProps) {
   const [phase, setPhase] = useState<Phase>('idle')
   const [samples, setSamples] = useState<number[]>([])
   const [targetDigit, setTargetDigit] = useState<number | null>(null)
@@ -54,7 +92,11 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
   const [journal, setJournal] = useState<JournalEntry[]>([])
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const [autoMode, setAutoMode] = useState(false)
-  /** True from the moment the predicted digit prints — this is the trade moment. */
+  /** Seconds left on the post-lock entry countdown (5 → 0). */
+  const [entryCountdown, setEntryCountdown] = useState(0)
+  /** True only while the TRADE NOW badge is held after the countdown. */
+  const [tradeNowFlash, setTradeNowFlash] = useState(false)
+  /** True from the moment the trade was placed — shown on the round result. */
   const [firedNow, setFiredNow] = useState(false)
 
   const lastProcessedRef = useRef<number | null>(null)
@@ -85,6 +127,9 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
 
   const onTickFoundRef = useRef(onTickFound)
   onTickFoundRef.current = onTickFound
+
+  const onTradeNowRef = useRef(onTradeNow)
+  onTradeNowRef.current = onTradeNow
 
   /**
    * Closes a round: records it in the history, then either loops into a fresh
@@ -157,19 +202,20 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
         const analysis = onAnalyze()
         const conf = analysis.confidence
 
-        // Lock the prediction and go straight into watching. There is no entry
-        // countdown and no tick budget: the predicted digit IS the signal, so
-        // Stage B starts on the very next tick rather than waiting out a timer.
+        // Lock the prediction, then run the entry countdown. The predicted digit
+        // is the signal and the countdown is the entry timing — no tick budget is
+        // involved, so nothing here can stop the signal being traded.
         setTimeout(() => {
           setTargetDigit(bestDigit)
           setTargetConfidence(conf)
           targetRef.current = bestDigit
-          addJournal('lock', `Predicted digit locked: ${bestDigit} — watching for it now`, bestDigit, true)
+          addJournal('lock', `Predicted digit locked: ${bestDigit} at ${conf.toFixed(1)}% AI confidence`, bestDigit, true)
           onTargetLocked?.(bestDigit, conf)
-          setPhase('watching')
+          setEntryCountdown(ENTRY_SECONDS)
+          setPhase('countdown')
           watchTicksRef.current = 0
           lastProcessedRef.current = null
-          addJournalRef.current('watch', `Watching for predicted digit ${bestDigit}...`)
+          addJournalRef.current('countdown', `Entry countdown started — ${ENTRY_SECONDS}s to TRADE NOW`)
           onWatchStartRef.current?.(bestDigit)
         }, 500)
       }
@@ -177,6 +223,62 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
       return next
     })
   }, [phase, lastDigit, addJournal, onAnalyze, onTargetLocked])
+
+  // ══════════════ ENTRY COUNTDOWN: 5-4-3-2-1 → TRADE NOW ══════════════
+  //
+  // The digit is locked and the entry window counts down to zero. The contract
+  // is placed at zero — not when the digit prints. The predicted digit is what
+  // the contract is placed on; the countdown is purely entry timing, so the
+  // tick stream is not consulted and no tick count can end the wait early.
+  //
+  // Deadline-based on the wall clock and keyed on `phase` alone: the tick
+  // stream re-renders this panel several times a second, and an earlier version
+  // whose dependencies included the parent's callback was torn down and reset
+  // before it ever elapsed (it sat frozen on "5").
+  useEffect(() => {
+    if (phase !== 'countdown') return
+
+    const deadline = Date.now() + ENTRY_SECONDS * 1000
+    let fired = false
+    let holdId: ReturnType<typeof setTimeout> | undefined
+    setEntryCountdown(ENTRY_SECONDS)
+
+    const id = setInterval(() => {
+      if (fired) return
+
+      const now = Date.now()
+      const remaining = secondsLeft(deadline, now)
+      setEntryCountdown(remaining)
+      if (!isCountdownComplete(deadline, now)) return
+
+      // Countdown complete. This is the one moment a trade is placed.
+      fired = true
+      clearInterval(id)
+      const digit = targetRef.current
+      setFiredNow(true)
+      setTradeNowFlash(true)
+      addJournalRef.current(
+        'trade',
+        `⏱ Countdown complete — TRADE NOW on predicted digit ${digit} (${confidenceRef.current.toFixed(1)}% confidence)`,
+        digit ?? undefined,
+        true,
+      )
+      if (digit != null) onTradeNowRef.current?.(digit, confidenceRef.current)
+
+      // Hold the TRADE NOW badge briefly so the moment is actually visible,
+      // then hand over to watching, which only scores the round.
+      holdId = setTimeout(() => {
+        setTradeNowFlash(false)
+        setPhase('watching')
+        lastProcessedRef.current = null
+      }, TRADE_NOW_HOLD_MS)
+    }, 200)
+
+    return () => {
+      clearInterval(id)
+      if (holdId) clearTimeout(holdId)
+    }
+  }, [phase])
 
   // ══════════════ STAGE B: Watch for target digit ══════════════
   useEffect(() => {
@@ -204,9 +306,9 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
       return
     }
 
-    // The predicted digit turned up on a real tick. That appearance IS the
-    // signal, and it is handed to the auto trader.
-    setFiredNow(true)
+    // The predicted digit turned up on a real tick. The contract itself was
+    // already placed at the TRADE NOW hand-off, so this appearance confirms
+    // and scores the round rather than triggering the trade.
     onTickFoundRef.current?.(target)
     finishRound('win')
   }, [phase, lastDigit, addJournal, finishRound])
@@ -217,6 +319,8 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
     setTargetDigit(null)
     setTargetConfidence(0)
     watchTicksRef.current = 0
+    setEntryCountdown(0)
+    setTradeNowFlash(false)
     setFiredNow(false)
     lastProcessedRef.current = null
     addJournal('system', '🔄 Starting new prediction round...')
@@ -232,20 +336,19 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
   useEffect(() => {
     if (runToken <= 0) return
     const p = phaseRef.current
-    if (p === 'collecting' || p === 'watching') return
+    if (p === 'collecting' || p === 'countdown' || p === 'watching') return
     setAutoMode(true)
     startNewRound()
   }, [runToken, startNewRound])
 
   const handlePredictionClick = useCallback(() => {
-    if (!connected || phase === 'collecting' || phase === 'watching') return
+    if (!connected || phase === 'collecting' || phase === 'countdown' || phase === 'watching') return
     startNewRound()
   }, [connected, phase, startNewRound])
 
   const handleStop = useCallback(() => {
-    const wasWatching = phaseRef.current === 'watching'
+    const stoppingPhase = phaseRef.current
     const target = targetRef.current
-    const waited = watchTicksRef.current
 
     setAutoMode(false)
     // Set the ref too: the round-end timeout reads it, and state updates are not
@@ -253,22 +356,31 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
     // kick off another round.
     autoModeRef.current = false
     setFiredNow(false)
+    setTradeNowFlash(false)
+    setEntryCountdown(0)
     lastProcessedRef.current = null
 
-    // A stop mid-watch is the one honest way a round can end without the digit
-    // turning up. Record it, so an unbounded watch never reports a hit rate that
-    // is 100% by construction.
-    if (wasWatching && target != null && waited > 0) {
+    // A stop mid-watch is a contract that was already placed and never got
+    // confirmed, so it is recorded as a miss — otherwise an unbounded watch
+    // reports a hit rate that is 100% by construction.
+    if (stoppingPhase === 'watching' && target != null) {
       watchTicksRef.current = 0
       finishRound('loss')
       return
+    }
+
+    // A stop during the countdown means no contract was placed, so there is
+    // nothing to score. Log it as abandoned rather than quietly recording it as
+    // a loss the trader never actually took.
+    if (stoppingPhase === 'countdown') {
+      addJournal('system', `Round abandoned during the entry countdown — no contract placed on digit ${target ?? '—'}`)
     }
 
     setPhase('idle')
     setSamples([])
     setTargetDigit(null)
     watchTicksRef.current = 0
-  }, [finishRound])
+  }, [finishRound, addJournal])
 
   // Turning auto trade off abandons whatever round is in flight, so it goes
   // through the same stop path — otherwise a round dropped this way would leave
@@ -313,6 +425,7 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
       {/* ══════════════ MAIN PANEL ══════════════ */}
       <div className={cn(
         'rounded-2xl border-2 p-5 transition-all duration-300 relative overflow-hidden',
+        phase === 'countdown' ? 'bg-gradient-to-br from-violet-500/15 to-emerald-500/10 border-violet-500/40' :
         phase === 'watching' ? 'bg-gradient-to-br from-blue-500/10 to-indigo-500/10 border-blue-500/30' :
         phase === 'collecting' ? 'bg-gradient-to-br from-violet-500/10 to-purple-500/10 border-violet-500/30' :
         phase === 'result' ? 'bg-gradient-to-br from-emerald-500/15 to-yellow-500/10 border-emerald-500/40' :
@@ -417,6 +530,69 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
             </div>
           )}
 
+          {/* ══════════════ ENTRY COUNTDOWN: 5-4-3-2-1 → TRADE NOW ══════════════ */}
+          {phase === 'countdown' && targetDigit != null && (
+            <div className="w-full space-y-4 text-center">
+              <div className="mb-2 flex items-center justify-center gap-2">
+                <Target className="h-4 w-4 text-violet-400" />
+                <p className="text-xs font-bold uppercase tracking-wider text-violet-400">
+                  Predicted Digit Locked
+                </p>
+              </div>
+
+              {/* Locked predicted digit — the whole signal */}
+              <div className={cn('mx-auto flex h-24 w-24 items-center justify-center rounded-3xl border-2 bg-gradient-to-br shadow-xl', digitBg(targetDigit))}>
+                <span className={cn('font-mono text-5xl font-black leading-none tabular-nums', digitColor(targetDigit))}>{targetDigit}</span>
+              </div>
+
+              {tradeNowFlash ? (
+                <p className="inline-flex items-center gap-2 rounded-full border border-emerald-500/50 bg-emerald-500/20 px-4 py-1.5 text-lg font-black tracking-wider text-emerald-300 animate-pulse">
+                  TRADE NOW
+                </p>
+              ) : (
+                <>
+                  <p className="font-mono text-sm text-gray-300">
+                    Entry in{' '}
+                    <span className="text-2xl font-black tabular-nums text-white">{entryCountdown}</span>{' '}
+                    {entryCountdown === 1 ? 'second' : 'seconds'}
+                  </p>
+                  <div className="mx-auto h-2 w-full max-w-xs overflow-hidden rounded-full bg-black/40">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-violet-500 to-emerald-400 transition-[width] duration-200 ease-linear"
+                      style={{ width: `${(entryCountdown / ENTRY_SECONDS) * 100}%` }}
+                    />
+                  </div>
+                  <div className="flex items-center justify-center gap-1">
+                    {Array.from({ length: ENTRY_SECONDS }).map((_, i) => (
+                      <span
+                        key={i}
+                        className={cn(
+                          'h-1.5 w-1.5 rounded-full transition-colors',
+                          i < ENTRY_SECONDS - entryCountdown + 1 ? 'bg-violet-400' : 'bg-gray-700',
+                        )}
+                      />
+                    ))}
+                  </div>
+                </>
+              )}
+
+              {tradeNowFlash && (
+                <p className="font-mono text-[11px] text-emerald-300">
+                  Placing the contract on predicted digit {targetDigit}…
+                </p>
+              )}
+
+              <AIConfidence value={targetConfidence} />
+
+              <button
+                onClick={handleStop}
+                className="flex w-full items-center justify-center gap-2 rounded-xl border border-red-500/30 bg-red-500/10 py-2.5 text-xs font-bold text-red-400 transition-all hover:bg-red-500/20"
+              >
+                <Square className="w-3.5 h-3.5" /> STOP
+              </button>
+            </div>
+          )}
+
           {/* ══════════════ STAGE B: WATCHING ══════════════ */}
           {phase === 'watching' && targetDigit != null && (
             <div className="text-center space-y-4 w-full">
@@ -443,15 +619,17 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
                 </p>
               </div>
 
-              {/* Target progress */}
+              {/* Trade is already placed at TRADE NOW — this stage only scores it */}
               <div className="w-full max-w-xs mx-auto">
                 <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
-                  <p className="text-[10px] text-gray-500 font-mono">
-                    Fires the moment {targetDigit} prints — the predicted digit is the only trigger
+                  <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <p className="text-[10px] text-gray-400 font-mono">
+                    Contract placed at TRADE NOW — waiting for {targetDigit} to confirm the win
                   </p>
                 </div>
               </div>
+
+              <AIConfidence value={targetConfidence} />
 
               {/* Last 5 ticks mini-display */}
               <div className="flex items-center justify-center gap-1">
@@ -492,10 +670,12 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
                 </p>
                 {firedNow && (
                   <p className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-emerald-500/40 bg-emerald-500/15 px-3 py-1 text-sm font-black tracking-wider text-emerald-300 animate-pulse">
-                    TRADE NOW
+                    TRADE PLACED ✓
                   </p>
                 )}
               </div>
+
+              <AIConfidence value={targetConfidence} />
               <div className="flex items-center justify-center gap-4">
                 <div className="text-center">
                   <p className="text-[10px] text-gray-500 uppercase">Target</p>

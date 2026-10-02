@@ -59,13 +59,12 @@ check(
 
 console.log('\nFire decision still gated correctly')
 const base = {
-  autoTrade: true, watching: true, targetDigit: 5, lastDigit: 5,
+  autoTrade: true, tradeNow: true, targetDigit: 5,
   targetConfidence: 70, minConfidence: 0, alreadyTradedTarget: null,
   now: 10_000, lastTradeAt: 0,
 }
-check('fires when the locked digit prints', decideAutoFire(base), 'fire')
-check('does not fire while idle', decideAutoFire({ ...base, watching: false }), 'idle')
-check('does not fire on a different digit', decideAutoFire({ ...base, lastDigit: 4 }), 'idle')
+check('fires on the engine TRADE NOW hand-off', decideAutoFire(base), 'fire')
+check('does not fire before the countdown finishes', decideAutoFire({ ...base, tradeNow: false }), 'idle')
 check(
   'does not fire twice on the same target',
   decideAutoFire({ ...base, alreadyTradedTarget: 5 }),

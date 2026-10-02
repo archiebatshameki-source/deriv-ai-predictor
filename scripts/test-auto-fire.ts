@@ -11,9 +11,8 @@ function check(name: string, actual: unknown, expected: unknown) {
 
 const base: FireDecisionInput = {
   autoTrade: true,
-  watching: true,
+  tradeNow: true,
   targetDigit: 7,
-  lastDigit: 7,
   targetConfidence: 0,
   minConfidence: 0,
   alreadyTradedTarget: null,
@@ -30,22 +29,20 @@ check('confidence 0 with the default gate (0) still fires',
 check('confidence 0 with an old 10% gate is skipped (the original bug)',
   decideAutoFire({ ...base, targetConfidence: 0, minConfidence: 10 }), 'skip-confidence')
 
-// ── The trigger ─────────────────────────────────────────────────────────────
-check('fires when the locked digit prints', decideAutoFire(base), 'fire')
-check('waits while a different digit prints',
-  decideAutoFire({ ...base, lastDigit: 3 }), 'idle')
-check('waits before the digit has printed at all',
-  decideAutoFire({ ...base, lastDigit: null }), 'idle')
-check('waits when Stage B has not started',
-  decideAutoFire({ ...base, watching: false }), 'idle')
-check('waits when auto trade is off',
+// ── The trigger: the engine's post-lock TRADE NOW hand-off ──────────────────
+check('fires on the TRADE NOW hand-off', decideAutoFire(base), 'fire')
+check('waits until the entry countdown has finished',
+  decideAutoFire({ ...base, tradeNow: false }), 'idle')
+check('waits while auto trade is off',
   decideAutoFire({ ...base, autoTrade: false }), 'idle')
+check('waits when no digit has been locked',
+  decideAutoFire({ ...base, targetDigit: null }), 'idle')
 
-// ── One trade per printed digit ─────────────────────────────────────────────
+// ── One trade per round ─────────────────────────────────────────────────────
 check('does not re-fire on the same target',
   decideAutoFire({ ...base, alreadyTradedTarget: 7 }), 'idle')
 check('a new target is tradeable again',
-  decideAutoFire({ ...base, targetDigit: 4, lastDigit: 4, alreadyTradedTarget: 7 }), 'fire')
+  decideAutoFire({ ...base, targetDigit: 4, alreadyTradedTarget: 7 }), 'fire')
 
 // ── Throttle ────────────────────────────────────────────────────────────────
 check('throttled just after a trade',
@@ -71,21 +68,22 @@ check('throttle outranks the confidence filter',
 let deterministic = true
 for (let i = 0; i < 500; i++) {
   if (decideAutoFire(base) !== 'fire') deterministic = false
-  if (decideAutoFire({ ...base, lastDigit: 3 }) !== 'idle') deterministic = false
+  if (decideAutoFire({ ...base, tradeNow: false }) !== 'idle') deterministic = false
 }
-check('the fire decision is a pure function of the predicted digit', deterministic, true)
+check('the fire decision is a pure function of the TRADE NOW hand-off', deterministic, true)
 
-// Every digit 0-9 fires when it is the predicted digit that printed.
+// Every digit 0-9 is tradeable once the engine hands over at TRADE NOW.
 let allDigits = true
 for (let d = 0; d <= 9; d++) {
-  if (decideAutoFire({ ...base, targetDigit: d, lastDigit: d }) !== 'fire') allDigits = false
+  if (decideAutoFire({ ...base, targetDigit: d }) !== 'fire') allDigits = false
 }
-check('every predicted digit 0-9 fires when it prints', allDigits, true)
+check('every predicted digit 0-9 is tradeable at TRADE NOW', allDigits, true)
 
-// The inputs are exactly the ones the gate needs — no wait telemetry.
-check('no tick-count field exists on the decision input',
+// The inputs are exactly the ones the gate needs — no wait telemetry and no raw
+// tick stream, so neither can influence whether a signal is traded.
+check('no tick-count or tick-stream field exists on the decision input',
   Object.keys(base).sort().join(','),
-  'alreadyTradedTarget,autoTrade,lastDigit,lastTradeAt,minConfidence,now,targetConfidence,targetDigit,watching')
+  'alreadyTradedTarget,autoTrade,lastTradeAt,minConfidence,now,targetConfidence,targetDigit,tradeNow')
 
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail > 0) process.exit(1)

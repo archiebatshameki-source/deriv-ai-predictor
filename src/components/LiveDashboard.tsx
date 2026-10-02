@@ -105,6 +105,16 @@ export function LiveDashboard({
   const tradedTargetRef = useRef<number | null>(null)
   const autoTradeRef = useRef(false)
   const stakeRef = useRef(1)
+  /**
+   * The engine's most recent TRADE NOW hand-off. Carries its own digit and
+   * confidence so the fire effect never reads a stale value out of state, and
+   * `consumedHandoffRef` guarantees a hand-off is acted on exactly once.
+   */
+  const tradeHandoffRef = useRef<{ digit: number; confidence: number; key: number } | null>(null)
+  const consumedHandoffRef = useRef<number | null>(null)
+  const handoffCounterRef = useRef(0)
+  /** Bumped by the engine at TRADE NOW purely to re-run the fire effect. */
+  const [tradeNowKey, setTradeNowKey] = useState(0)
 
   const { state, predictions, setPredictions, analyze, generatePrediction, getMatchPrediction, switchSymbol } = useDerivStream(selectedSymbol)
 
@@ -228,52 +238,80 @@ export function LiveDashboard({
 
   const handleWatchStart = useCallback((digit: number) => {
     setWatching(true)
-    if (autoTradeRef.current) pushLog('info', `Armed — waiting for digit ${digit} to appear, no tick limit`)
+    if (autoTradeRef.current) pushLog('info', `Armed — entry countdown running for predicted digit ${digit}`)
+  }, [pushLog])
+
+  /**
+   * The engine's TRADE NOW hand-off: the predicted digit is locked and the
+   * post-lock entry countdown (5-4-3-2-1) has finished. This is the one moment
+   * the auto trader places a contract, and it is the engine that decides it —
+   * the tick stream is not consulted.
+   */
+  const handleTradeNow = useCallback((digit: number, confidence: number) => {
+    handoffCounterRef.current += 1
+    tradeHandoffRef.current = { digit, confidence, key: handoffCounterRef.current }
+    setTradeNowKey(k => k + 1)
+    pushLog(
+      'signal',
+      `TRADE NOW — entry countdown complete on predicted digit ${digit} (${confidence.toFixed(1)}% confidence)`,
+    )
   }, [pushLog])
 
   /**
    * The engine telling the trader the predicted digit has turned up on a real
-   * tick. The digit itself is the entire signal — there is no tick count.
+   * tick. The contract was already placed at the TRADE NOW hand-off, so this
+   * only confirms and scores the round.
    */
   const handleTickFound = useCallback((digit: number) => {
-    pushLog('signal', `Predicted digit ${digit} printed — signal confirmed, firing the trade`)
+    pushLog('signal', `Predicted digit ${digit} printed — round confirmed as a win`)
   }, [pushLog])
 
-  // Fire a trade the moment the predicted digit prints. That appearance IS the
-  // genuine Matches signal: the engine picked the digit and Stage B has now
-  // confirmed it on a real tick. The user's confidence filter is the only thing
-  // that can stop it, and it says so out loud rather than failing silently.
+  // Place the contract at the engine's TRADE NOW hand-off.
+  //
+  // Driven by a consumed-once hand-off rather than by component state: an
+  // effect keyed on `targetDigit` would re-run when the *next* round locked a
+  // new digit and fire that trade before its countdown had even started. The
+  // hand-off carries its own digit/confidence, and `consumedHandoffRef` means a
+  // single TRADE NOW can never produce two contracts.
   useEffect(() => {
+    const handoff = tradeHandoffRef.current
+    if (!handoff || consumedHandoffRef.current === handoff.key) return
+
     const now = Date.now()
     const decision = decideAutoFire({
       autoTrade,
-      watching,
-      targetDigit,
-      lastDigit: state.lastDigit,
-      targetConfidence,
+      tradeNow: true,
+      targetDigit: handoff.digit,
+      targetConfidence: handoff.confidence,
       minConfidence,
       alreadyTradedTarget: tradedTargetRef.current,
       now,
       lastTradeAt: lastTradeAtRef.current,
     })
 
-    if (decision === 'idle' || decision === 'throttled') return
+    if (decision === 'throttled') return
+
+    // Consumed either way: a hand-off that is skipped or filtered out must not
+    // be reconsidered on the next render.
+    consumedHandoffRef.current = handoff.key
+
+    if (decision === 'idle') return
 
     if (decision === 'skip-confidence') {
-      tradedTargetRef.current = targetDigit
+      tradedTargetRef.current = handoff.digit
       setWatching(false)
       pushLog(
         'info',
-        `Digit ${targetDigit} printed but the trade was skipped — signal confidence ${targetConfidence.toFixed(1)}% is below the ${minConfidence}% filter.`
+        `TRADE NOW on digit ${handoff.digit} but the trade was skipped — signal confidence ${handoff.confidence.toFixed(1)}% is below the ${minConfidence}% filter.`,
       )
       return
     }
 
-    tradedTargetRef.current = targetDigit
+    tradedTargetRef.current = handoff.digit
     lastTradeAtRef.current = now
     setWatching(false)
-    void fireAutoTrade(targetDigit!, targetConfidence)
-  }, [autoTrade, watching, targetDigit, targetConfidence, minConfidence, state.lastDigit, fireAutoTrade, pushLog])
+    void fireAutoTrade(handoff.digit, handoff.confidence)
+  }, [tradeNowKey, autoTrade, minConfidence, fireAutoTrade, pushLog])
 
   // Reset the arming state whenever auto trading is switched off.
   useEffect(() => {
@@ -620,6 +658,7 @@ export function LiveDashboard({
                 lastDigitHistory={lastDigitHistory}
                 onTargetLocked={handleTargetLocked}
                 onWatchStart={handleWatchStart}
+                onTradeNow={handleTradeNow}
                 onTickFound={handleTickFound}
                 runToken={runToken}
               />
