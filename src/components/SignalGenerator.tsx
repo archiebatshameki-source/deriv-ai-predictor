@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { cn } from '../lib/cn'
 import { decideWatch } from '../lib/watch'
-import { Brain, Target, Play, Square, Check, X, Eye, Ban, ShieldAlert, Hash, ArrowLeftRight } from 'lucide-react'
+import { Brain, Target, Play, Square, Check, X, Eye, Ban, ShieldAlert, Hash } from 'lucide-react'
 
-type Phase = 'idle' | 'collecting' | 'locked' | 'watching' | 'result'
+type Phase = 'idle' | 'collecting' | 'watching' | 'result'
 
 type JournalEntry = {
   time: number
@@ -17,7 +17,6 @@ type HistoryEntry = {
   match: number
   targetDigit: number
   result: 'win' | 'loss'
-  ticksWaited: number
   confidence: number
   time: number
 }
@@ -30,12 +29,12 @@ type SignalGeneratorProps = {
   onTargetLocked?: (digit: number, confidence: number) => void
   onWatchStart?: (digit: number) => void
   /**
-   * Fired the moment the anticipated tick turns up — the locked digit appearing
-   * on a real tick. This is the hand-off that connects the prediction engine to
-   * the auto trader: the trader no longer has to infer the find by watching the
-   * raw digit stream, it is told, along with how many ticks it took.
+   * Fired the moment the predicted digit turns up on a real tick. This is the
+   * hand-off that connects the prediction engine to the auto trader: the trader
+   * no longer infers the find by diffing the raw digit stream — it is told.
+   * The predicted digit IS the signal; there is no tick count involved.
    */
-  onTickFound?: (digit: number, ticksWaited: number) => void
+  onTickFound?: (digit: number) => void
   /**
    * Bumped by the parent to drive a round from outside this panel. The
    * auto-trade button lives in the dashboard, so one click there has to start
@@ -46,22 +45,16 @@ type SignalGeneratorProps = {
 }
 
 const SAMPLE_SIZE = 10
-/** Seconds the entry countdown runs for once a target digit locks. */
-const ARM_SECONDS = 5
 
 export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHistory, onTargetLocked, onWatchStart, onTickFound, runToken = 0 }: SignalGeneratorProps) {
   const [phase, setPhase] = useState<Phase>('idle')
   const [samples, setSamples] = useState<number[]>([])
   const [targetDigit, setTargetDigit] = useState<number | null>(null)
-  const [targetFreq, setTargetFreq] = useState(0)
   const [targetConfidence, setTargetConfidence] = useState(0)
   const [journal, setJournal] = useState<JournalEntry[]>([])
   const [history, setHistory] = useState<HistoryEntry[]>([])
-  const [watchTicks, setWatchTicks] = useState(0)
   const [autoMode, setAutoMode] = useState(false)
-  /** Seconds left on the entry countdown shown after a target locks. */
-  const [armSeconds, setArmSeconds] = useState<number | null>(null)
-  /** True from the moment the locked digit prints — this is the trade moment. */
+  /** True from the moment the predicted digit prints — this is the trade moment. */
   const [firedNow, setFiredNow] = useState(false)
 
   const lastProcessedRef = useRef<number | null>(null)
@@ -69,7 +62,6 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
   const targetRef = useRef<number | null>(null)
   const phaseRef = useRef<Phase>('idle')
   const autoModeRef = useRef(false)
-  const watchStartRef = useRef(0)
   const watchTicksRef = useRef(0)
   const confidenceRef = useRef(0)
   const startNewRoundRef = useRef<() => void>(() => {})
@@ -98,18 +90,17 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
    * Closes a round: records it in the history, then either loops into a fresh
    * round (auto mode) or parks the engine.
    *
-   * `ticksWaited` is what the round actually took. It is recorded as telemetry
-   * and is never a reason to end a round — a tick-count ceiling is precisely
-   * what used to stop the auto trader from firing.
+   * A win and a loss are recorded on the same footing, so the hit rate is
+   * measured rather than assumed — the only way a round ends without a win is a
+   * deliberate stop, and that is logged as a miss.
    */
-  const finishRound = useCallback((result: 'win' | 'loss', ticksWaited: number) => {
+  const finishRound = useCallback((result: 'win' | 'loss') => {
     const target = targetRef.current
     matchCounterRef.current += 1
     setHistory(prev => [{
       match: matchCounterRef.current,
       targetDigit: target ?? -1,
       result,
-      ticksWaited,
       confidence: confidenceRef.current,
       time: Date.now(),
     }, ...prev].slice(0, 50))
@@ -117,8 +108,8 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
     addJournal(
       'result',
       result === 'win'
-        ? `✅ DIGIT ${target} APPEARED after ${ticksWaited} tick(s) — anticipated tick found, trade fired`
-        : `⚠️ Round stopped before digit ${target} appeared (${ticksWaited} tick(s)) — logged as a MISS`,
+        ? `✅ PREDICTED DIGIT ${target} APPEARED — trade fired`
+        : `⚠️ Round stopped before digit ${target} appeared — logged as a MISS`,
       target ?? undefined,
       result === 'win',
     )
@@ -131,7 +122,6 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
         setPhase('idle')
         setSamples([])
         setTargetDigit(null)
-        setWatchTicks(0)
         watchTicksRef.current = 0
         lastProcessedRef.current = null
       }
@@ -163,60 +153,30 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
             bestDigit = d
           }
         }
-        const pct = ((minFreq / SAMPLE_SIZE) * 100).toFixed(0)
-
         // Run the 6-layer analysis to get confidence
         const analysis = onAnalyze()
         const conf = analysis.confidence
 
-        // Schedule lock-in after a short delay
+        // Lock the prediction and go straight into watching. There is no entry
+        // countdown and no tick budget: the predicted digit IS the signal, so
+        // Stage B starts on the very next tick rather than waiting out a timer.
         setTimeout(() => {
           setTargetDigit(bestDigit)
-          setTargetFreq(minFreq)
           setTargetConfidence(conf)
           targetRef.current = bestDigit
-          addJournal('lock', `Target digit locked: ${bestDigit} (freq ${pct}%, ${minFreq}/${SAMPLE_SIZE}) — entry in ${ARM_SECONDS}s`, bestDigit, true)
-          setPhase('locked')
+          addJournal('lock', `Predicted digit locked: ${bestDigit} — watching for it now`, bestDigit, true)
           onTargetLocked?.(bestDigit, conf)
-          // The arm countdown effect takes it from here to the watching phase.
+          setPhase('watching')
+          watchTicksRef.current = 0
+          lastProcessedRef.current = null
+          addJournalRef.current('watch', `Watching for predicted digit ${bestDigit}...`)
+          onWatchStartRef.current?.(bestDigit)
         }, 500)
       }
 
       return next
     })
   }, [phase, lastDigit, addJournal, onAnalyze, onTargetLocked])
-
-  // ══════════════ ENTRY COUNTDOWN: locked → watching ══════════════
-  // Deadline-based, and deliberately independent of the parent's callback
-  // identities: the live tick stream re-renders this panel several times a
-  // second, so a timer keyed on props would be cleared and restarted before it
-  // ever fired. One interval per lock, compared against a wall-clock deadline.
-  useEffect(() => {
-    if (phase !== 'locked') return
-
-    const deadline = Date.now() + ARM_SECONDS * 1000
-
-    const tick = () => {
-      const left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000))
-      setArmSeconds(left)
-      if (left > 0) return
-
-      // Countdown finished — Stage B takes over and watches for the digit.
-      clearInterval(timer)
-      const target = targetRef.current
-      setPhase('watching')
-      watchStartRef.current = Date.now()
-      setWatchTicks(0)
-      watchTicksRef.current = 0
-      lastProcessedRef.current = null // Reset to catch next tick
-      addJournalRef.current('watch', `Entry window closed — watching for digit ${target}...`)
-      if (target != null) onWatchStartRef.current?.(target)
-    }
-
-    setArmSeconds(ARM_SECONDS)
-    const timer = setInterval(tick, 100)
-    return () => clearInterval(timer)
-  }, [phase])
 
   // ══════════════ STAGE B: Watch for target digit ══════════════
   useEffect(() => {
@@ -229,40 +189,34 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
     if (target == null) return
 
     watchTicksRef.current += 1
-    const waited = watchTicksRef.current
-    setWatchTicks(waited)
 
-    const decision = decideWatch({ targetDigit: target, lastDigit, ticksWaited: waited })
+    const decision = decideWatch({ targetDigit: target, lastDigit })
 
     if (decision === 'keep-watching') {
-      // Still waiting. Purely telemetry — the round runs for as many ticks as
-      // it takes, and nothing here can end it early.
+      // Still waiting. The round runs for as many ticks as it takes and nothing
+      // here can end it early — the predicted digit printing is the only exit.
       addJournal(
         'watch',
-        `Waiting for digit ${target}... last tick was ${lastDigit} — ${waited} tick(s) waited`,
+        `Waiting for predicted digit ${target}... last tick was ${lastDigit}`,
         lastDigit,
         false,
       )
       return
     }
 
-    // The anticipated tick turned up. This is the trade moment, on whatever tick
-    // it happened to land on. The count is handed to the auto trader as
-    // information; it is never a reason to have stopped waiting.
+    // The predicted digit turned up on a real tick. That appearance IS the
+    // signal, and it is handed to the auto trader.
     setFiredNow(true)
-    onTickFoundRef.current?.(target, waited)
-    finishRound('win', waited)
+    onTickFoundRef.current?.(target)
+    finishRound('win')
   }, [phase, lastDigit, addJournal, finishRound])
 
   const startNewRound = useCallback(() => {
     setPhase('collecting')
     setSamples([])
     setTargetDigit(null)
-    setTargetFreq(0)
     setTargetConfidence(0)
-    setWatchTicks(0)
     watchTicksRef.current = 0
-    setArmSeconds(null)
     setFiredNow(false)
     lastProcessedRef.current = null
     addJournal('system', '🔄 Starting new prediction round...')
@@ -278,7 +232,7 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
   useEffect(() => {
     if (runToken <= 0) return
     const p = phaseRef.current
-    if (p === 'collecting' || p === 'locked' || p === 'watching') return
+    if (p === 'collecting' || p === 'watching') return
     setAutoMode(true)
     startNewRound()
   }, [runToken, startNewRound])
@@ -298,7 +252,6 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
     // visible until the next render — without this a STOP mid-round could still
     // kick off another round.
     autoModeRef.current = false
-    setArmSeconds(null)
     setFiredNow(false)
     lastProcessedRef.current = null
 
@@ -307,14 +260,13 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
     // is 100% by construction.
     if (wasWatching && target != null && waited > 0) {
       watchTicksRef.current = 0
-      finishRound('loss', waited)
+      finishRound('loss')
       return
     }
 
     setPhase('idle')
     setSamples([])
     setTargetDigit(null)
-    setWatchTicks(0)
     watchTicksRef.current = 0
   }, [finishRound])
 
@@ -334,7 +286,6 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
   const wins = history.filter(h => h.result === 'win').length
   const total = history.length
   const winRate = total > 0 ? (wins / total) * 100 : 0
-  const avgTicks = total > 0 ? history.reduce((s, h) => s + h.ticksWaited, 0) / total : 0
 
   const digitColor = (d: number) => {
     if (d === 0 || d === 5) return 'text-violet-400'
@@ -364,7 +315,6 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
         'rounded-2xl border-2 p-5 transition-all duration-300 relative overflow-hidden',
         phase === 'watching' ? 'bg-gradient-to-br from-blue-500/10 to-indigo-500/10 border-blue-500/30' :
         phase === 'collecting' ? 'bg-gradient-to-br from-violet-500/10 to-purple-500/10 border-violet-500/30' :
-        phase === 'locked' ? 'bg-gradient-to-br from-emerald-500/10 to-green-500/10 border-emerald-500/30' :
         phase === 'result' ? 'bg-gradient-to-br from-emerald-500/15 to-yellow-500/10 border-emerald-500/40' :
         'bg-[#1a1a2e] border-gray-700'
       )}>
@@ -467,46 +417,6 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
             </div>
           )}
 
-          {/* ══════════════ LOCKED ══════════════ */}
-          {phase === 'locked' && targetDigit != null && (
-            <div className="text-center space-y-4 w-full animate-[scale-in_0.3s_ease-out]">
-              <div className="w-16 h-16 mx-auto rounded-full bg-emerald-500/20 border-2 border-emerald-500/40 flex items-center justify-center">
-                <Check className="w-8 h-8 text-emerald-400" />
-              </div>
-              <div>
-                <p className="text-xs font-bold text-emerald-400 uppercase tracking-wider">Target Digit Locked</p>
-              </div>
-              <div className={cn('w-28 h-28 mx-auto rounded-3xl flex items-center justify-center border-2 shadow-xl bg-gradient-to-br', digitBg(targetDigit))}>
-                <span className={cn('font-black font-mono tabular-nums leading-none text-6xl', digitColor(targetDigit))}>{targetDigit}</span>
-              </div>
-              <div className="bg-black/30 rounded-xl border border-gray-700 p-3 text-center">
-                <p className="text-[11px] text-gray-400 font-mono">
-                  Target: <span className="text-white font-bold">{targetDigit}</span> — freq: <span className="text-white font-bold">{targetFreq}/{SAMPLE_SIZE}</span>
-                </p>
-                {armSeconds != null && (
-                  <>
-                    <p className="text-[11px] text-emerald-400 font-mono mt-1">
-                      Entry in{' '}
-                      <span className="text-white font-bold tabular-nums">{armSeconds}</span>{' '}
-                      second{armSeconds === 1 ? '' : 's'}
-                    </p>
-                    <div className="mt-2 flex items-center gap-2">
-                      <div className="flex-1 h-1.5 rounded-full bg-black/50 overflow-hidden">
-                        <div
-                          className="h-full rounded-full bg-emerald-500/70 transition-all duration-100 ease-linear"
-                          style={{ width: `${(armSeconds / ARM_SECONDS) * 100}%` }}
-                        />
-                      </div>
-                      <span className="text-2xl font-black font-mono tabular-nums leading-none text-emerald-400">
-                        {armSeconds}
-                      </span>
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
-          )}
-
           {/* ══════════════ STAGE B: WATCHING ══════════════ */}
           {phase === 'watching' && targetDigit != null && (
             <div className="text-center space-y-4 w-full">
@@ -523,7 +433,7 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
               {/* Watching status */}
               <div className="bg-black/30 rounded-xl border border-blue-500/20 p-3 text-center">
                 <p className="text-xs text-blue-400 font-mono">
-                  Watching for digit <span className="text-white font-bold">{targetDigit}</span>...
+                  Waiting for predicted digit <span className="text-white font-bold">{targetDigit}</span>...
                 </p>
                 <p className="text-xs text-gray-400 font-mono mt-1">
                   Last tick: <span className="text-white font-bold">{lastDigit ?? '—'}</span>
@@ -531,18 +441,14 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
                     <span className="text-red-400 ml-1">✗</span>
                   )}
                 </p>
-                <p className="text-[10px] text-gray-500 mt-1">
-                  Ticks waited: <span className="text-white font-mono">{watchTicks}</span>
-                  <span className="text-emerald-400/80"> · no tick limit</span>
-                </p>
               </div>
 
-              {/* Target progress — shows how close we are */}
+              {/* Target progress */}
               <div className="w-full max-w-xs mx-auto">
                 <div className="flex items-center gap-2">
                   <div className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
                   <p className="text-[10px] text-gray-500 font-mono">
-                    Fires the moment {targetDigit} prints — however many ticks it takes
+                    Fires the moment {targetDigit} prints — the predicted digit is the only trigger
                   </p>
                 </div>
               </div>
@@ -582,7 +488,7 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
               <div>
                 <p className="text-lg font-black text-emerald-400 uppercase tracking-wider">✅ WIN!</p>
                 <p className="text-xs text-gray-400 mt-1">
-                  Digit <span className="text-white font-bold">{targetDigit}</span> appeared after <span className="text-white font-bold">{watchTicks}</span> ticks
+                  Predicted digit <span className="text-white font-bold">{targetDigit}</span> appeared
                 </p>
                 {firedNow && (
                   <p className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-emerald-500/40 bg-emerald-500/15 px-3 py-1 text-sm font-black tracking-wider text-emerald-300 animate-pulse">
@@ -656,7 +562,6 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
               <span className={cn('text-[10px] font-mono font-bold px-1.5 py-0.5 rounded', winRate >= 50 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400')}>
                 {winRate.toFixed(0)}%
               </span>
-              <span className="text-[10px] font-mono text-gray-500">Avg: {avgTicks.toFixed(1)} ticks</span>
             </div>
           </div>
 
@@ -677,11 +582,10 @@ export function SignalGenerator({ onAnalyze, connected, lastDigit, lastDigitHist
               >
                 <span className="text-gray-500 font-mono text-[10px] w-8">#{h.match}</span>
                 <div className="flex items-center gap-1.5">
-                  <span className={cn('font-mono font-black text-lg', digitColor(h.targetDigit))}>{h.targetDigit}</span>
-                  <ArrowLeftRight className="w-3 h-3 text-gray-500" />
+                  <span className="text-[9px] uppercase tracking-wider text-gray-500">predicted</span>
                   <span className={cn('font-mono font-black text-lg', digitColor(h.targetDigit))}>{h.targetDigit}</span>
                 </div>
-                <span className="text-[10px] font-mono text-gray-400">{h.ticksWaited}t</span>
+                <span className="text-[10px] font-mono text-gray-400">{h.confidence.toFixed(0)}%</span>
                 {h.result === 'win'
                   ? <Check className="w-3.5 h-3.5 text-emerald-400" />
                   : <X className="w-3.5 h-3.5 text-red-400" />

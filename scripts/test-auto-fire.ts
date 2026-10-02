@@ -64,33 +64,28 @@ check('high confidence passes a 20% filter',
 check('throttle outranks the confidence filter',
   decideAutoFire({ ...base, targetConfidence: 0, minConfidence: 10, lastTradeAt: base.now - 100 }), 'throttled')
 
-// ── Tick-count independence ─────────────────────────────────────────────────
-// The engine now waits for the anticipated tick for as long as it takes, so the
-// trader must take the signal at ANY tick count. A ceiling here would be the
-// same bug in a different place: a real find that never became a trade.
-let firedAtEveryTick = true
-let firstNonFire = -1
-for (let t = 1; t <= 500; t++) {
-  if (decideAutoFire({ ...base, ticksWaited: t }) !== 'fire') {
-    firedAtEveryTick = false
-    if (firstNonFire < 0) firstNonFire = t
-  }
+// ── The predicted digit is the whole signal ─────────────────────────────────
+// `ticksWaited` was removed from FireDecisionInput, so the trader cannot even
+// be handed a tick count any more — the old bug (a real find that never became
+// a trade because the wait was judged too long) is no longer expressible.
+let deterministic = true
+for (let i = 0; i < 500; i++) {
+  if (decideAutoFire(base) !== 'fire') deterministic = false
+  if (decideAutoFire({ ...base, lastDigit: 3 }) !== 'idle') deterministic = false
 }
-check('fires at every tick count 1..500 (old engine gave up at 20)', firstNonFire, -1)
-if (firedAtEveryTick) pass++
+check('the fire decision is a pure function of the predicted digit', deterministic, true)
 
-// The specific case that used to be lost: the digit arriving just past the old
-// 20-tick watch window.
-check('fires on a find at tick 21 — past the old watch window',
-  decideAutoFire({ ...base, ticksWaited: 21 }), 'fire')
-check('fires on a find at tick 100',
-  decideAutoFire({ ...base, ticksWaited: 100 }), 'fire')
+// Every digit 0-9 fires when it is the predicted digit that printed.
+let allDigits = true
+for (let d = 0; d <= 9; d++) {
+  if (decideAutoFire({ ...base, targetDigit: d, lastDigit: d }) !== 'fire') allDigits = false
+}
+check('every predicted digit 0-9 fires when it prints', allDigits, true)
 
-// A long wait is telemetry, not a reason to skip.
-check('a long wait does not downgrade the decision',
-  decideAutoFire({ ...base, ticksWaited: 500 }), 'fire')
-check('omitting the tick count entirely changes nothing (it is unused)',
-  decideAutoFire({ ...base }), decideAutoFire({ ...base, ticksWaited: 137 }))
+// The inputs are exactly the ones the gate needs — no wait telemetry.
+check('no tick-count field exists on the decision input',
+  Object.keys(base).sort().join(','),
+  'alreadyTradedTarget,autoTrade,lastDigit,lastTradeAt,minConfidence,now,targetConfidence,targetDigit,watching')
 
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail > 0) process.exit(1)

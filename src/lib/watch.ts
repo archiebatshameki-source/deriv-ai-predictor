@@ -2,26 +2,24 @@
  * The Stage B watch decision, pulled out of the component so it can be tested
  * without a live tick stream.
  *
- * The rule is deliberately ONE condition: has the anticipated tick — the digit
- * Stage A locked — turned up yet? Nothing else may end a round.
+ * The rule is deliberately ONE condition, and the only input that matters is
+ * the predicted digit: has the digit Stage A picked turned up on a real tick?
  *
- * `ticksWaited` is carried in the input because callers have it to hand and it
- * is useful telemetry, but it is NOT consulted here. A tick-count ceiling is
- * exactly what used to break the auto trader: a round that did not match inside
- * WATCH_WINDOW_TICKS ticks was closed as a miss and a brand new digit was
- * locked, so the trade for the digit the engine was actually waiting on never
- * fired. Waiting is unbounded by design — a fair digit stream expects roughly 1
- * hit in 10 per tick, so the chance of never seeing the digit collapses quickly
+ * There is no tick counter here and no tick ceiling. An earlier version capped
+ * the wait at a fixed number of ticks and closed the round as a miss, which is
+ * exactly what stopped the auto trader from firing on a slow digit: the signal
+ * for the digit the engine was actually waiting on never reached it. Waiting is
+ * unbounded by design — a fair digit stream expects roughly 1 hit in 10 per
+ * tick, so the chance of never seeing the digit collapses quickly
  * (0.9^100 ≈ 0.0027%), while a cap silently converts "not yet" into "give up".
  */
 
 export type WatchDecision = 'keep-watching' | 'found'
 
 export type WatchDecisionInput = {
+  /** The digit Stage A predicted. The only thing Stage B watches for. */
   targetDigit: number | null
   lastDigit: number | null
-  /** Telemetry only — never part of the decision. */
-  ticksWaited: number
 }
 
 export function decideWatch(input: WatchDecisionInput): WatchDecision {
